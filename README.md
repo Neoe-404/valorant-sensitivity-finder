@@ -54,6 +54,17 @@ npm start          # 生产服务器
 
 调试：测试页面 URL 加 `?debug=true` 显示原始/虚拟增量、倍率、FPS 面板（仅开发阶段建议使用）。
 
+### GitHub Pages 部署
+
+在仓库的 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**。
+推送到 `main` 后，`Deploy GitHub Pages` 工作流会运行测试、Lint、类型检查，导出静态网站并发布。
+也可在 Actions 页面手动运行该工作流。
+
+Pages 构建使用 `GITHUB_PAGES=true`，并从 Pages 配置读取 `PAGES_BASE_PATH`，确保子路径下的导航和资源地址正确。
+本地开发以及普通 `npm run build` / `npm start` 保持 Next.js 默认运行方式。导出的 `out/` 无需提交。
+
+私有仓库使用 Pages 需要支持该功能的 GitHub 套餐；公开网站与公开源码是两个独立选择，不要为部署直接更改仓库可见性。
+
 ---
 
 ## 目录结构
