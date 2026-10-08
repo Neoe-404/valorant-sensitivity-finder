@@ -27,6 +27,12 @@
 
 评分与搜索实现分别见 [lib/scoring.ts](lib/scoring.ts) 和 [lib/sensitivity-engine.ts](lib/sensitivity-engine.ts)。结果中的置信指标用于反映本次测试的表现差异与收敛情况，不是统计意义上的准确概率。
 
+## 评分与置信度口径
+
+- 综合分 = Flick 30% + Tracking 30% + Micro 25% + Consistency 15% − 惩罚项。
+- Micro 分 = 精度 50% + 速度 20% + 稳定性 30% − 修正惩罚（Micro 没有 miss 概念，不含恒定命中项）。
+- 推荐区间至少保持最小半宽；推荐置信度上限 90，单一候选池封顶 55（不超过 Medium），区间过窄再扣 20。
+
 ## 本地运行
 
 使用 Node.js 24，与部署工作流保持一致。

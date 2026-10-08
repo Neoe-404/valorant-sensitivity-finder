@@ -2,10 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { clearHistory, deleteHistoryRecord, loadHistory } from "@/lib/storage";
-import { HistoryChart } from "@/components/results/HistoryChart";
 import { History as HistoryIcon, Trash2, ChevronRight, FlaskConical } from "lucide-react";
 import type { HistoryRecord } from "@/types";
+
+// recharts 仅历史页使用，按需加载减小首屏 JS
+const HistoryChart = dynamic(
+  () => import("@/components/results/HistoryChart").then((m) => m.HistoryChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-64 w-full animate-pulse rounded-lg border border-line bg-panel" />,
+  }
+);
 
 export default function HistoryPage() {
   const [records, setRecords] = useState<HistoryRecord[]>([]);
@@ -22,6 +31,15 @@ export default function HistoryPage() {
     setRecords(loadHistory());
     setSelected(null);
   }, []);
+
+  // 其他标签页写入/删除历史时自动刷新
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.key.startsWith("vsf:")) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [refresh]);
 
   const onDelete = (id: string) => {
     setError(deleteHistoryRecord(id) === null ? "删除未能完成，请检查浏览器存储后重试。" : null);
@@ -121,8 +139,9 @@ export default function HistoryPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <button
-                        className="grid h-8 w-8 place-items-center rounded-md text-dim opacity-0 transition hover:bg-accent/10 hover:text-accent group-hover:opacity-100"
+                        className="grid h-8 w-8 place-items-center rounded-md text-dim opacity-60 transition hover:bg-accent/10 hover:text-accent group-hover:opacity-100 focus-visible:opacity-100"
                         title="删除"
+                        aria-label="删除该记录"
                         onClick={(e) => {
                           e.stopPropagation();
                           onDelete(r.id);

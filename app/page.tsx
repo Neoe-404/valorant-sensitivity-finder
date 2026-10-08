@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { LazyMotion, domAnimation, m } from "framer-motion";
 import { Crosshair, MousePointerClick, FlaskConical, LineChart, ShieldAlert, ArrowRight, Radar } from "lucide-react";
 
 export default function HomePage() {
   return (
-    <main className="relative min-h-screen overflow-hidden">
+    <LazyMotion features={domAnimation} strict>
+      <main className="relative min-h-screen overflow-hidden">
       {/* 背景装饰 */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute left-1/2 top-[-10%] h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-accent/10 blur-[120px]" />
@@ -24,7 +25,7 @@ export default function HomePage() {
       <div className="relative mx-auto max-w-6xl px-4 sm:px-6">
         {/* ===== Hero ===== */}
         <section className="flex min-h-[72vh] flex-col items-center justify-center py-20 text-center">
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
@@ -32,9 +33,9 @@ export default function HomePage() {
           >
             <Radar size={13} className="text-accent" />
             Personal Optimization Tool · 不是 eDPI 计算器
-          </motion.div>
+          </m.div>
 
-          <motion.h1
+          <m.h1
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.05 }}
@@ -43,9 +44,9 @@ export default function HomePage() {
             找到真正适合你的
             <br />
             VALORANT 灵敏度
-          </motion.h1>
+          </m.h1>
 
-          <motion.p
+          <m.p
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.15 }}
@@ -54,18 +55,18 @@ export default function HomePage() {
             不是复制职业选手参数。
             <br className="hidden sm:block" />
             通过你的实际鼠标控制表现寻找答案。
-          </motion.p>
+          </m.p>
 
-          <motion.p
+          <m.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.6, delay: 0.25 }}
             className="mt-2 font-mono text-xs text-dim"
           >
             Pointer Lock · movementX/Y · Virtual Sensitivity Multiplier
-          </motion.p>
+          </m.p>
 
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.3 }}
@@ -78,9 +79,9 @@ export default function HomePage() {
             <a href="#how" className="btn-ghost">
               查看原理
             </a>
-          </motion.div>
+          </m.div>
 
-          <motion.div
+          <m.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.8, delay: 0.45 }}
@@ -91,19 +92,19 @@ export default function HomePage() {
             <span>Tracking Test</span>
             <span className="text-accent">·</span>
             <span>Micro Adjustment</span>
-          </motion.div>
+          </m.div>
         </section>
 
         {/* ===== How It Works ===== */}
         <section id="how" className="py-16">
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-80px" }}
           >
             <h2 className="text-4xl font-bold tracking-tight">Sensitivity is Personal.</h2>
             <p className="mt-2 text-dim">每个人的灵敏度都应该不同。三步找出你的答案。</p>
-          </motion.div>
+          </m.div>
 
           <div className="mt-10 grid gap-4 md:grid-cols-3">
             {[
@@ -126,7 +127,7 @@ export default function HomePage() {
                 desc: "搜索算法逐轮缩小范围，输出推荐灵敏度、区间、eDPI 与置信度。",
               },
             ].map((s, i) => (
-              <motion.div
+              <m.div
                 key={s.title}
                 initial={{ opacity: 0, y: 24 }}
                 whileInView={{ opacity: 1, y: 0 }}
@@ -140,14 +141,14 @@ export default function HomePage() {
                   {s.title} <span className="ml-1 text-sm font-normal text-dim">{s.cn}</span>
                 </div>
                 <p className="mt-2 text-sm leading-relaxed text-dim">{s.desc}</p>
-              </motion.div>
+              </m.div>
             ))}
           </div>
         </section>
 
         {/* ===== Result Demo ===== */}
         <section className="py-16">
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-80px" }}
@@ -175,12 +176,12 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-          </motion.div>
+          </m.div>
         </section>
 
         {/* ===== Why not copy pro settings ===== */}
         <section className="py-16 pb-28">
-          <motion.div
+          <m.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
@@ -205,9 +206,10 @@ export default function HomePage() {
             <Link href="/setup" className="btn-primary mt-8">
               开始测试 <ArrowRight size={16} />
             </Link>
-          </motion.div>
+          </m.div>
         </section>
       </div>
-    </main>
+      </main>
+    </LazyMotion>
   );
 }

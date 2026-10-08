@@ -2,13 +2,22 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { getHistoryRecord, getSessionForResults } from "@/lib/storage";
 import { SensitivityResult } from "@/components/results/SensitivityResult";
-import { AimProfileChart } from "@/components/results/AimProfileChart";
 import { ScoreCard } from "@/components/results/ScoreCard";
 import { Crosshair, TrendingUp, AlertTriangle, CheckCircle2, Info, History } from "lucide-react";
 import type { SessionSnapshot } from "@/types";
+
+// recharts 仅结果页使用，按需加载减小首屏 JS
+const AimProfileChart = dynamic(
+  () => import("@/components/results/AimProfileChart").then((m) => m.AimProfileChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-72 w-full animate-pulse rounded-lg border border-line bg-panel" />,
+  }
+);
 
 export default function ResultsPage() {
   return (

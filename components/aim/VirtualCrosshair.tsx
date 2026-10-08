@@ -16,6 +16,8 @@ export interface CrosshairOptions {
   dot: boolean;
   /** 中心点半径 px */
   dotRadius: number;
+  /** 整体透明度 0~1（暂停态半透明显示用），默认 1 */
+  alpha?: number;
 }
 
 export const CROSSHAIR_DEFAULTS: CrosshairOptions = {
@@ -33,8 +35,9 @@ export function drawCrosshair(
   y: number,
   opts: CrosshairOptions = CROSSHAIR_DEFAULTS
 ): void {
-  const { color, gap, length, thickness, dot, dotRadius } = opts;
+  const { color, gap, length, thickness, dot, dotRadius, alpha } = opts;
   ctx.save();
+  ctx.globalAlpha = alpha ?? 1;
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
   ctx.lineWidth = thickness;

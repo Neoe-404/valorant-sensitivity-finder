@@ -145,6 +145,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   });
   const lastRawRef = useRef({ dx: 0, dy: 0 });
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1 });
+  const centeredRef = useRef(false);
 
   // 尺寸 & DPR
   useEffect(() => {
@@ -159,8 +160,9 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       cv.height = Math.round(rect.height * dpr);
       cv.style.width = `${rect.width}px`;
       cv.style.height = `${rect.height}px`;
-      // 初始准星在屏幕中央
-      if (cursorRef.current.x === 0 && cursorRef.current.y === 0) {
+      // 首次布局时把准星放到屏幕中央（此后 resize 不再干预光标位置）
+      if (!centeredRef.current) {
+        centeredRef.current = true;
         cursorRef.current = { x: rect.width / 2, y: rect.height / 2 };
       }
     };
@@ -278,11 +280,17 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         drawTarget(ctx, t, now);
       }
 
-      // 准星（站在目标上的视觉层级）
+      // 准星（站在目标上的视觉层级）；暂停时半透明保留定位参考
       if (running) {
         drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
           ...CROSSHAIR_DEFAULTS,
           color: crosshairColor || CROSSHAIR_DEFAULTS.color,
+        });
+      } else if (phaseRef.current === "paused") {
+        drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
+          ...CROSSHAIR_DEFAULTS,
+          color: crosshairColor || CROSSHAIR_DEFAULTS.color,
+          alpha: 0.4,
         });
       }
     },
@@ -434,12 +442,12 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         className="fixed inset-0 z-50 overflow-hidden bg-void select-none"
         style={{ touchAction: "none" }}
       >
-        <canvas ref={canvasRef} className="absolute inset-0" />
+        <canvas ref={canvasRef} className="absolute inset-0" aria-label="瞄准测试区域" />
         {lockError || (locked && !rawInput) ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-6 z-[80] flex justify-center">
             <div className="rounded-lg border border-warn/50 bg-black/80 px-4 py-2 text-xs text-warn shadow-xl">
               {lockError
-                ? "指针锁定失败，测试尚未开始。请稍候点击开始或恢复重试，或使用支持鼠标锁定的桌面浏览器。"
+                ? "指针锁定失败，测试尚未开始。若刚按过 Esc，浏览器会短暂限制重新锁定，请等待约 1 秒后重试；也可换用支持鼠标锁定的桌面浏览器。"
                 : "当前使用普通鼠标锁定，系统指针加速可能影响手感。"}
             </div>
           </div>
