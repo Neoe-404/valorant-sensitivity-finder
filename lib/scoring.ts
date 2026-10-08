@@ -31,6 +31,11 @@ import type {
   TrackingSample,
 } from "@/types";
 
+/** Flick 到达时间一致性：CV 达到该值时一致性分为 0 */
+const FLICK_CONSISTENCY_CV_ZERO = 0.6;
+/** Micro hold 误差一致性：CV 达到该值时稳定性分为 0 */
+const MICRO_STABILITY_CV_ZERO = 0.6;
+
 /* ================= Flick ================= */
 
 export interface FlickScoringInput {
@@ -69,7 +74,7 @@ export function computeFlickScore(input: FlickScoringInput): FlickResult {
   // 路径效率：直线 = 100，弯弯绕绕 = 低
   const efficiencyScore = avgEff * 100;
   // 一致性：到达时间 CV 0 → 100 分，CV 0.6 → 0 分
-  const consistency = hits.length ? clamp(100 * (1 - timeCv / 0.6), 0, 100) : 0;
+  const consistency = hits.length ? clamp(100 * (1 - timeCv / FLICK_CONSISTENCY_CV_ZERO), 0, 100) : 0;
 
   // --- 汇总 + 惩罚 ---
   const raw =
@@ -206,7 +211,7 @@ function emptyTracking(input: TrackingScoringInput): TrackingResult {
     p95Error: 0,
     errorStd: 0,
     coverage: 0,
-    velocityDiffRatio: 1,
+    velocityDiffRatio: 0,
     jitter: 0,
     score: 0,
     breakdown: {
@@ -233,6 +238,8 @@ export interface MicroScoringInput {
 export function computeMicroScore(input: MicroScoringInput): MicroResult {
   const { records, targetRadius, durationMs } = input;
   const total = records.length;
+  // Micro 没有 miss 概念：每个生成的目标最终都会被 hold 命中，accuracy 恒为 1。
+  // 因此它只作为记录保留（breakdown.accuracy），不参与加权——恒定项会稀释区分度。
   const accuracy = total === 0 ? 0 : 1;
 
   const holdErrors = records.map((r) => r.avgHoldError);
@@ -241,7 +248,7 @@ export function computeMicroScore(input: MicroScoringInput): MicroResult {
   const avgHoldError = mean(holdErrors);
   const avgCompletion = mean(completions);
   const avgCorr = mean(corrections);
-  const stability = total ? clamp(100 * (1 - cv(holdErrors) / 0.6), 0, 100) : 0;
+  const stability = total ? clamp(100 * (1 - cv(holdErrors) / MICRO_STABILITY_CV_ZERO), 0, 100) : 0;
 
   const accuracyScore = accuracy * 100;
   // 精度：hold 平均误差为半径的 0.9 倍 → 0 分
@@ -250,8 +257,9 @@ export function computeMicroScore(input: MicroScoringInput): MicroResult {
   const speedScore = total ? clamp(100 - (avgCompletion - 900) / 8, 0, 100) : 0;
   const correctionPenalty = clamp(avgCorr - 1.5, 0, 10) * 4;
 
+  // 精度 50% + 速度 20% + 稳定性 30% − 修正惩罚
   const score = clamp(
-    accuracyScore * 0.3 + precisionScore * 0.35 + speedScore * 0.15 + stability * 0.2 - correctionPenalty,
+    precisionScore * 0.5 + speedScore * 0.2 + stability * 0.3 - correctionPenalty,
     0,
     100
   );

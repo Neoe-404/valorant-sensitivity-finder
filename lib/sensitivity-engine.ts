@@ -10,11 +10,12 @@
  * 4. 每轮步长递减：[20%, 12%, 8%, 5%, 3%]。
  * 5. 收敛条件：新中心与上轮中心变化 < 1% base，或达到最大轮数。
  * 6. 最终推荐：取 bestScore×0.92 以上的候选池，按分数加权求推荐值，
- *    区间 = 候选池 sens 范围夹紧推荐值 ± 最新步长；置信度由区间宽度、
- *    top 差距和完成轮数共同决定。
+ *    区间 = 候选池 sens 范围夹紧推荐值 ± 最新步长（有最小半宽，单一候选池
+ *    保持对称区间）；置信度由区间宽度、top 差距、候选池大小和完成轮数
+ *    共同决定，单一候选池或过窄区间会降级。
  */
 
-import { clamp, mean, roundTo } from "./statistics";
+import { clamp, roundTo } from "./statistics";
 import { clampSensitivity, roundSensitivity, sensitivityMultiplier } from "./mouse-math";
 import {
   computeOverallScore,
@@ -28,6 +29,16 @@ import type { CandidateScore, ConfidenceLabel, RoundResult, SensitivityRecommend
 export const ROUND_STEPS = [0.2, 0.12, 0.08, 0.05, 0.03];
 export const MAX_ROUNDS_STANDARD = 4;
 export const MAX_ROUNDS_QUICK = 3;
+/** 推荐候选池阈值：得分 ≥ 最佳 × 0.92 的候选参与加权 */
+export const POOL_SCORE_THRESHOLD = 0.92;
+/** 推荐区间最小半宽（绝对灵敏度值），防止零宽区间 */
+const MIN_RANGE_HALF_WIDTH = 0.006;
+/** 单一候选池的置信度上限（依据不足时最多到 Medium） */
+const SINGLE_BASIS_CONFIDENCE_CAP = 55;
+/** 区间相对宽度低于该比例视为"过窄"，扣减置信度 */
+const NARROW_RANGE_RATIO = 0.01;
+const NARROW_RANGE_PENALTY = 20;
+const SINGLE_BASIS_PENALTY = 30;
 
 interface CompletedTests {
   flick: FlickResult;
@@ -163,7 +174,8 @@ export class SensitivitySearch {
         flickAccuracy: tests.flick.accuracy,
       },
     };
-    card.confidence = this.candidateConfidence(card);
+    // 置信度在全部候选完成后统一重算（见 recomputeConfidence），
+    // 避免"完成得早的候选"在后来者加入后仍保留陈旧值。
 
     if (existing) {
       const idx = this.candidates.indexOf(existing);
@@ -172,6 +184,16 @@ export class SensitivitySearch {
       this.candidates.push(card);
     }
     return card;
+  }
+
+  /**
+   * 全部候选完成后统一重算每个候选的置信度。
+   * 候选置信度依赖"与其他候选的分数差距"，必须在最终候选池确定后计算。
+   */
+  recomputeConfidence(): void {
+    for (const card of this.candidates) {
+      if (card.finished) card.confidence = this.candidateConfidence(card);
+    }
   }
 
   private candidateConfidence(card: CandidateScore): number {
@@ -195,6 +217,7 @@ export class SensitivitySearch {
    * 推荐值 = 候选池内的按分加权平均值；区间 = 候选池范围夹紧 ± 最新步长。
    */
   recommend(): SensitivityRecommendation {
+    this.recomputeConfidence();
     const finished = this.candidates.filter((c) => c.finished && c.overallScore !== null);
     const sorted = [...finished].sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
     const best = sorted[0];
@@ -202,7 +225,7 @@ export class SensitivitySearch {
       throw new Error("No completed candidates available for recommendation");
     }
     // 候选池：得分 ≥ best × 0.92
-    const pool = sorted.filter((c) => (c.overallScore ?? 0) >= (best.overallScore ?? 0) * 0.92);
+    const pool = sorted.filter((c) => (c.overallScore ?? 0) >= (best.overallScore ?? 0) * POOL_SCORE_THRESHOLD);
     const sensValues = pool.map((c) => c.sensitivity);
     const weights = pool.map((c) => c.overallScore ?? 0);
     const totalWeight = weights.reduce((s, w) => s + w, 0);
@@ -216,14 +239,30 @@ export class SensitivitySearch {
     const step = this.stepFor(this.currentRound);
     const poolMin = Math.min(...sensValues);
     const poolMax = Math.max(...sensValues);
-    const rangeMin = roundSensitivity(Math.max(poolMin, recommended - step * best.sensitivity));
-    const rangeMax = roundSensitivity(Math.min(poolMax, recommended + step * best.sensitivity));
+    // 区间 = 推荐值 ± max(最新步长, 最小半宽)；候选池 ≥2 时才夹紧到池范围，
+    // 单一候选时保持对称区间，避免出现"零宽区间 + 高置信"的矛盾。
+    const halfWidth = Math.max(step * best.sensitivity, MIN_RANGE_HALF_WIDTH);
+    let rangeMin = roundSensitivity(recommended - halfWidth);
+    let rangeMax = roundSensitivity(recommended + halfWidth);
+    if (pool.length > 1) {
+      rangeMin = roundSensitivity(Math.max(poolMin, recommended - halfWidth));
+      rangeMax = roundSensitivity(Math.min(poolMax, recommended + halfWidth));
+    }
+    // 钳制到合法灵敏度范围：越界的区间会被快照校验拒绝，导致结果无法写入历史
+    rangeMin = roundSensitivity(clampSensitivity(rangeMin));
+    rangeMax = roundSensitivity(clampSensitivity(rangeMax));
 
-    // 置信度：区间越窄、top 差距越大、轮数越多 → 越高
+    // 置信度：区间越窄、top 差距越大、轮数越多 → 越高；
+    // 候选池过小或区间过窄时降级，避免依据不足仍报"高置信"。
     const spread = (rangeMax - rangeMin) / Math.max(0.01, recommended);
     const topGap = sorted.length > 1 ? (best.overallScore ?? 0) - (sorted[1].overallScore ?? 0) : 10;
-    let confidence = 100 - spread * 380 - (topGap < 2 ? 25 : 0) + this.currentRound * 5;
-    confidence = clamp(Math.round(confidence), 35, 97);
+    const basisPenalty = pool.length < 2 ? SINGLE_BASIS_PENALTY : 0;
+    const narrowPenalty =
+      (rangeMax - rangeMin) / Math.max(0.0001, recommended) < NARROW_RANGE_RATIO ? NARROW_RANGE_PENALTY : 0;
+    let confidence =
+      100 - spread * 380 - (topGap < 2 ? 25 : 0) - basisPenalty - narrowPenalty + this.currentRound * 5;
+    confidence = clamp(Math.round(confidence), 35, 90);
+    if (pool.length < 2) confidence = Math.min(confidence, SINGLE_BASIS_CONFIDENCE_CAP);
 
     return {
       sensitivity: roundSensitivity(recommended),
@@ -236,7 +275,7 @@ export class SensitivitySearch {
       basisCount: pool.length,
       basis: sensValues,
       reason: `${pool.length} 个候选灵敏度参与加权（得分 ≥ 最佳×0.92），区间跨度 ${
-        Math.round((rangeMax - rangeMin) / recommended * 100) / 1
+        Math.round(((rangeMax - rangeMin) / recommended) * 100)
       }%。`,
     };
   }
@@ -261,8 +300,4 @@ export function labelFor(confidence: number): ConfidenceLabel {
   if (confidence >= 70) return "Medium-High";
   if (confidence >= 55) return "Medium";
   return "Low";
-}
-
-export function meanOf(values: number[]): number {
-  return mean(values);
 }

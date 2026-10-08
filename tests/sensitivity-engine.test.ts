@@ -187,4 +187,56 @@ describe("recommendation", () => {
     const search = new SensitivitySearch(0.35, 800, "standard");
     expect(() => search.recommend()).toThrow();
   });
+
+  it("single-candidate pool: confidence is capped and the range is non-degenerate", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    for (const s of search.initialCandidates()) {
+      const f = Math.abs(s - 0.28) < 0.0005 ? 90 : Math.abs(s - 0.35) < 0.0005 ? 70 : 60;
+      search.completeCandidate(s, { flick: fakeFlick(f), tracking: fakeTracking(f), micro: fakeMicro(f) });
+    }
+    const rec = search.recommend();
+    expect(rec.basisCount).toBe(1);
+    // 单一候选时区间保持推荐值 ± 半宽，而不是退化为零宽
+    expect(rec.rangeMin).toBeLessThan(rec.sensitivity);
+    expect(rec.rangeMax).toBeGreaterThan(rec.sensitivity);
+    // 依据不足：置信度最多到 Medium
+    expect(rec.confidence).toBeLessThanOrEqual(55);
+    expect(["Medium", "Low"]).toContain(rec.confidenceLabel);
+  });
+
+  it("an overly narrow pool range is penalized in confidence", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    search.completeCandidate(0.35, { flick: fakeFlick(90), tracking: fakeTracking(90), micro: fakeMicro(90) });
+    search.completeCandidate(0.351, { flick: fakeFlick(89), tracking: fakeTracking(89), micro: fakeMicro(89) });
+    const rec = search.recommend();
+    expect(rec.basisCount).toBe(2);
+    // 两个几乎相同的候选 → 区间极窄，置信度必须被窄区间惩罚压低（低于 90 上限）
+    expect(rec.rangeMax - rec.rangeMin).toBeCloseTo(0.001, 3);
+    expect(rec.confidence).toBeLessThan(90);
+  });
+
+  it("keeps the recommended range inside the valid sensitivity bounds", () => {
+    // 边界回归：单候选池的对称区间曾可能越出 [0.05, 5]，导致快照校验失败、结果无法写入历史
+    const low = new SensitivitySearch(0.05, 800, "quick");
+    for (const s of low.initialCandidates()) {
+      const f = Math.abs(s - 0.05) < 0.0005 ? 90 : 60;
+      low.completeCandidate(s, { flick: fakeFlick(f), tracking: fakeTracking(f), micro: fakeMicro(f) });
+    }
+    const recLow = low.recommend();
+    expect(recLow.rangeMin).toBeGreaterThanOrEqual(0.05);
+    expect(recLow.rangeMax).toBeLessThanOrEqual(5);
+    expect(recLow.rangeMin).toBeLessThanOrEqual(recLow.sensitivity);
+    expect(recLow.rangeMax).toBeGreaterThanOrEqual(recLow.sensitivity);
+
+    const top = new SensitivitySearch(5, 800, "quick");
+    for (const s of top.initialCandidates()) {
+      const f = Math.abs(s - 5) < 0.0005 ? 90 : 60;
+      top.completeCandidate(s, { flick: fakeFlick(f), tracking: fakeTracking(f), micro: fakeMicro(f) });
+    }
+    const recTop = top.recommend();
+    expect(recTop.rangeMin).toBeGreaterThanOrEqual(0.05);
+    expect(recTop.rangeMax).toBeLessThanOrEqual(5);
+    expect(recTop.rangeMin).toBeLessThanOrEqual(recTop.sensitivity);
+    expect(recTop.rangeMax).toBeGreaterThanOrEqual(recTop.sensitivity);
+  });
 });

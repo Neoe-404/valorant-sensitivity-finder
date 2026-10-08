@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useAim, type ActiveTestApi, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeMicroScore } from "@/lib/scoring";
+import { clamp } from "@/lib/statistics";
 import { MICRO_RADIUS, configFor, dist, mulberry32 } from "./shared";
 import type { MicroResult, MicroTargetRecord, TestMode } from "@/types";
 import type { SceneTarget } from "@/components/aim/Target";
@@ -49,18 +50,17 @@ export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestPro
 
   const spawnTarget = (f: FrameData, s_: typeof s) => {
     const cur = aim.getCursor();
-    // 距离中心 80–170px 的环带内随机（靠近准星，但避免出生在准星上）
+    // 以当前准星为环带中心（80–170px）：目标靠近准星，又不会出生在准星上。
     const angle = s_.rng() * Math.PI * 2;
     const radius = 90 + s_.rng() * 100;
-    const x = f.w / 2 + Math.cos(angle) * radius;
-    const y = f.h / 2 + Math.sin(angle) * radius;
-    // 至少离当前准星 45px，否则重试
-    let px = x;
-    let py = y;
-    if (dist(cur.x, cur.y, x, y) < 45) {
+    const margin = Math.min(120, Math.max(50, Math.min(f.w, f.h) * 0.12));
+    // 至少离当前准星 45px；生成后夹紧到画布边距内（准星贴近边缘时兜底）
+    let px = clamp(cur.x + Math.cos(angle) * radius, margin, f.w - margin);
+    let py = clamp(cur.y + Math.sin(angle) * radius, margin, f.h - margin);
+    if (dist(cur.x, cur.y, px, py) < 45) {
       const a2 = angle + Math.PI / 1.6;
-      px = f.w / 2 + Math.cos(a2) * radius;
-      py = f.h / 2 + Math.sin(a2) * radius;
+      px = clamp(cur.x + Math.cos(a2) * radius, margin, f.w - margin);
+      py = clamp(cur.y + Math.sin(a2) * radius, margin, f.h - margin);
     }
     const id = s_.idCounter++;
     const now = performance.now();

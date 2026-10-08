@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mean, median, standardDeviation, clamp, percentile, cv } from "../lib/statistics";
+import { mean, median, standardDeviation, clamp, percentile, cv, roundTo, consistencyAcross } from "../lib/statistics";
 import { eDpi, sensitivityMultiplier, pathLength, dist2d } from "../lib/mouse-math";
 import {
   computeFlickScore,
@@ -28,6 +28,16 @@ describe("statistics", () => {
     expect(percentile([1, 2, 3, 4, 5], 50)).toBe(3);
     expect(percentile([1, 2, 3, 4, 5], 100)).toBe(5);
     expect(cv([10, 10, 10])).toBe(0);
+  });
+
+  it("roundTo / consistencyAcross / empty-input guards", () => {
+    expect(roundTo(0.333333)).toBeCloseTo(0.333, 6);
+    expect(roundTo(1.23456, 2)).toBeCloseTo(1.23, 6);
+    expect(standardDeviation([])).toBe(0);
+    expect(mean([])).toBe(0);
+    expect(median([])).toBe(0);
+    expect(consistencyAcross(90, 90, 90)).toBe(100);
+    expect(consistencyAcross(100, 50, 0)).toBeLessThan(30);
   });
 });
 
@@ -166,6 +176,8 @@ describe("scoring: tracking", () => {
   it("supports empty sample", () => {
     const r = computeTrackingScore({ samples: [], targetRadius: 26, seed: 3 });
     expect(r.score).toBe(0);
+    expect(r.velocityDiffRatio).toBe(0);
+    expect(Object.values(r.breakdown).every((score) => score === 0)).toBe(true);
   });
 });
 
@@ -195,9 +207,22 @@ describe("scoring: micro", () => {
   it("steady hands score higher than jittery ones", () => {
     const steady = computeMicroScore({ records: microRecords(8, 2, [0, 0, 1, 0]), targetRadius: 8, durationMs: 8000 });
     const shaky = computeMicroScore({ records: microRecords(8, 6, [4, 5, 3, 5]), targetRadius: 8, durationMs: 8000 });
-    expect(steady.score).toBeGreaterThan(80);
+    expect(steady.score).toBeGreaterThan(75);
     expect(shaky.score).toBeLessThan(steady.score);
     expect(steady.avgCorrections).toBeLessThan(shaky.avgCorrections);
+  });
+
+  it("no constant accuracy bonus: a perfect hold is bounded by the weighted sub-scores", () => {
+    // accuracy 不再参与加权（Micro 无 miss 概念）；满分来自精度/速度/稳定性组合
+    const perfect = computeMicroScore({
+      records: microRecords(8, 0, [0, 0, 0, 0]).map((r) => ({ ...r, completionTime: 900 })),
+      targetRadius: 8,
+      durationMs: 3600,
+    });
+    expect(perfect.score).toBeCloseTo(100, 5);
+    const degraded = computeMicroScore({ records: microRecords(8, 2, [0, 0, 1, 0]), targetRadius: 8, durationMs: 8000 });
+    // 精度不完美时分数明显低于满分，而不是被恒定 accuracy 项垫高
+    expect(degraded.score).toBeLessThan(95);
   });
 });
 

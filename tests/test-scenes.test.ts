@@ -121,4 +121,20 @@ describe("micro target completion", () => {
     expect(complete).toHaveBeenCalledTimes(1);
     expect(scene.targets).toEqual([]);
   });
+
+  it("spawns around the cursor and clamps the target inside the canvas", () => {
+    const complete = vi.fn<(result: MicroResult) => void>();
+    MicroAdjustmentTest({ mode: "quick", onComplete: complete });
+    // 准星贴近画布左上角：目标仍应落在边距内，且距准星 ≥45px
+    cursor = { x: 60, y: 60 };
+    frame();
+    expect(scene.targets).toHaveLength(1);
+    const t = scene.targets[0];
+    const margin = 120;
+    expect(t.x).toBeGreaterThanOrEqual(margin);
+    expect(t.x).toBeLessThanOrEqual(1920 - margin);
+    expect(t.y).toBeGreaterThanOrEqual(margin);
+    expect(t.y).toBeLessThanOrEqual(1080 - margin);
+    expect(Math.hypot(t.x - cursor.x, t.y - cursor.y)).toBeGreaterThanOrEqual(45);
+  });
 });
