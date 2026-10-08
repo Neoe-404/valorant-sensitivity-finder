@@ -11,30 +11,22 @@ import { configFor } from "@/components/tests/shared";
 import { DebugPanel } from "@/components/DebugPanel";
 import { useSensitivitySession } from "@/hooks/useSensitivitySession";
 import { loadSettings } from "@/lib/storage";
+import { DEFAULT_SETTINGS } from "@/types";
 import { virtualSensitivityScale, cmPer360 } from "@/lib/mouse-math";
 import { Crosshair, Pause, Play, RotateCcw, X } from "lucide-react";
 import type { CalibrationResult, FlickResult, MicroResult, PlayerSettings, TrackingResult } from "@/types";
 
 const TEST_NAMES = ["FLICK TEST", "TRACKING TEST", "MICRO TEST"] as const;
 
+/** settings 从 localStorage 加载完成前的兜底值（模块级常量，避免每帧新对象） */
+const FALLBACK_SETTINGS: PlayerSettings = { ...DEFAULT_SETTINGS };
+
 export default function TestPage() {
   const router = useRouter();
   const [settings, setSettings] = useState<PlayerSettings | null>(null);
   const [mobile, setMobile] = useState(false);
   const [epoch, setEpoch] = useState(0);
-  const flow = useSensitivitySession(
-    settings ?? {
-      dpi: 800,
-      baseSensitivity: 0.35,
-      skillLevel: "average",
-      playstyle: "mixed",
-      hand: "right",
-      screenWidth: 1920,
-      screenHeight: 1080,
-      mode: "standard",
-      crosshairColor: "#52f485",
-    }
-  );
+  const flow = useSensitivitySession(settings ?? FALLBACK_SETTINGS);
 
   useEffect(() => {
     const saved = loadSettings();
@@ -77,6 +69,16 @@ export default function TestPage() {
 
   const restartTest = useCallback(() => setEpoch((e) => e + 1), []);
 
+  // 测试未完成时退出会丢失全部进度，先确认
+  const confirmQuit = useCallback(
+    (target: string) => {
+      if (window.confirm("测试尚未完成，退出将丢失当前进度。确定退出？")) {
+        router.push(target);
+      }
+    },
+    [router]
+  );
+
   if (mobile) {
     return (
       <main className="mx-auto flex min-h-[70vh] max-w-xl flex-col items-center justify-center px-6 text-center">
@@ -113,7 +115,7 @@ export default function TestPage() {
         multiplier={calScale}
         referenceWidth={settings.screenWidth}
         crosshairColor={settings.crosshairColor}
-        onQuit={() => router.push("/setup")}
+        onQuit={() => confirmQuit("/setup")}
       >
         <CalibrationTest mode={settings.mode} onComplete={onCalibrationComplete} />
         <TopHud
@@ -128,7 +130,7 @@ export default function TestPage() {
           description={`先熟悉虚拟准星：它现在按你的真实参数模拟 —— 灵敏度 ${settings.baseSensitivity.toFixed(3)} @ DPI ${settings.dpi}（eDPI ${Math.round(settings.dpi * settings.baseSensitivity)}，约 ${cmPer360(settings.dpi, settings.baseSensitivity).toFixed(1)} cm/360°）。快速点击随机目标，建立移动与点击基线，不计入正式成绩。`}
           cta="开始校准（锁定鼠标）"
         />
-        <PauseOverlay onRestart={restartTest} onQuit={() => router.push("/setup")} />
+        <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/setup")} />
         <DebugPanel />
       </ArenaScreen>
     );
@@ -142,7 +144,7 @@ export default function TestPage() {
         multiplier={s.multiplier}
         referenceWidth={settings.screenWidth}
         crosshairColor={settings.crosshairColor}
-        onQuit={() => router.push("/history")}
+        onQuit={() => confirmQuit("/history")}
       >
         {s.testIndex === 0 && <FlickTest mode={settings.mode} onComplete={onTestComplete} />}
         {s.testIndex === 1 && <TrackingTest mode={settings.mode} onComplete={onTestComplete} />}
@@ -159,7 +161,7 @@ export default function TestPage() {
           description={`第 ${s.round} 轮 · 候选灵敏度 ${s.currentSensitivity.toFixed(3)}（eDPI ${Math.round(s.currentSensitivity * settings.dpi)}，约 ${cmPer360(settings.dpi, s.currentSensitivity).toFixed(1)} cm/360°）。规则：${testHint(s.testIndex, settings.mode)}`}
           cta="锁定鼠标并开始"
         />
-        <PauseOverlay onRestart={restartTest} onQuit={() => router.push("/history")} />
+        <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/history")} />
         <DebugPanel />
       </ArenaScreen>
     );
@@ -244,7 +246,7 @@ function TopHud({
     const id = window.setInterval(() => {
       const p = aim.sceneRef.current?.progress;
       setProgress(p ? p.label : "");
-    }, 100);
+    }, 250);
     return () => window.clearInterval(id);
   }, [aim]);
 
@@ -291,7 +293,7 @@ function ReadyOverlay({
         </div>
         <h2 className="font-mono text-xl font-bold uppercase tracking-[0.2em] text-fg">{title}</h2>
         <p className="mt-3 text-sm leading-relaxed text-dim">{description}</p>
-        <button className="btn-primary mt-6 w-full" onClick={aim.requestLockAndStart}>
+        <button className="btn-primary mt-6 w-full" onClick={aim.requestLockAndStart} autoFocus>
           {cta}
         </button>
         <p className="mt-3 text-[11px] text-dim/70">测试期间将锁定鼠标指针，按 ESC 可暂停</p>

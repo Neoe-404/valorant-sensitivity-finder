@@ -4,10 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { eDpi, cmPer360, virtualSensitivityScale, MIN_SENS, MAX_SENS } from "@/lib/mouse-math";
 import { loadSettings, saveSettings } from "@/lib/storage";
+import { validateSettingsInput } from "@/lib/validation";
 import {
   DEFAULT_SETTINGS,
-  SKILL_LEVELS,
-  PLAYSTYLES,
   TEST_MODES,
 } from "@/types";
 import type { PlayerSettings } from "@/types";
@@ -17,12 +16,17 @@ export default function SetupPage() {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [form, setForm] = useState<PlayerSettings>({ ...DEFAULT_SETTINGS });
+  // DPI / 灵敏度用字符串受控：清空输入框时显示占位符而不是 0
+  const [dpiText, setDpiText] = useState(String(DEFAULT_SETTINGS.dpi));
+  const [sensText, setSensText] = useState(String(DEFAULT_SETTINGS.baseSensitivity));
   const [errors, setErrors] = useState<string[]>([]);
 
   useEffect(() => {
     const saved = loadSettings();
     if (saved) {
       setForm((f) => ({ ...f, ...saved }));
+      setDpiText(String(saved.dpi));
+      setSensText(String(saved.baseSensitivity));
     }
     // 读取屏幕实际尺寸
     if (typeof window !== "undefined") {
@@ -44,19 +48,7 @@ export default function SetupPage() {
     setErrors([]);
   };
 
-  const validate = (): string[] => {
-    const errs: string[] = [];
-    const dpi = Number(form.dpi);
-    const sens = Number(form.baseSensitivity);
-    if (!form.dpi || String(form.dpi).trim() === "" || Number.isNaN(dpi)) errs.push("请输入鼠标 DPI（正整数）");
-    else if (!Number.isInteger(dpi) || dpi < 50 || dpi > 20000) errs.push("DPI 应为 50 ~ 20000 之间的整数");
-    if (!form.baseSensitivity || String(form.baseSensitivity).trim() === "" || Number.isNaN(sens)) {
-      errs.push("请输入当前 VALORANT 灵敏度");
-    } else if (sens < MIN_SENS || sens > MAX_SENS) {
-      errs.push(`灵敏度应在 ${MIN_SENS} ~ ${MAX_SENS} 之间`);
-    }
-    return errs;
-  };
+  const validate = (): string[] => validateSettingsInput({ dpi: form.dpi, baseSensitivity: form.baseSensitivity });
 
   const submit = () => {
     const errs = validate();
@@ -112,8 +104,11 @@ export default function SetupPage() {
               type="number"
               inputMode="numeric"
               className="input font-mono"
-              value={form.dpi}
-              onChange={(e) => set("dpi", Number(e.target.value))}
+              value={dpiText}
+              onChange={(e) => {
+                setDpiText(e.target.value);
+                set("dpi", Number(e.target.value));
+              }}
               placeholder="800"
             />
             <p className="mt-1.5 text-[11px] text-dim">可在鼠标驱动中查看（如 400 / 800 / 1600）</p>
@@ -128,8 +123,11 @@ export default function SetupPage() {
               max={MAX_SENS}
               inputMode="decimal"
               className="input font-mono"
-              value={Number.isNaN(form.baseSensitivity) ? "" : form.baseSensitivity}
-              onChange={(e) => set("baseSensitivity", Number(e.target.value))}
+              value={sensText}
+              onChange={(e) => {
+                setSensText(e.target.value);
+                set("baseSensitivity", Number(e.target.value));
+              }}
               placeholder="0.35"
             />
             <p className="mt-1.5 text-[11px] text-dim">设置 → 鼠标 → 灵敏度，保留 3 位小数</p>
@@ -173,68 +171,6 @@ export default function SetupPage() {
           <p className="mt-3 text-[11px] leading-relaxed text-dim/80">
             开始后会尝试使用原始鼠标输入；不支持时会显示提示。准星速度按灵敏度与实际测试区域宽度近似换算，不能替代游戏内校准。
           </p>
-        </div>
-
-        {/* 游戏水平 / 玩法 / 惯用手 */}
-        <div>
-          <label className="label">游戏水平</label>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {SKILL_LEVELS.map((l) => (
-              <button
-                key={l.value}
-                type="button"
-                onClick={() => set("skillLevel", l.value)}
-                className={`rounded-lg border px-3 py-2.5 text-sm transition ${
-                  form.skillLevel === l.value
-                    ? "border-accent bg-accent/10 text-accent"
-                    : "border-line bg-panel-2 text-dim hover:text-fg"
-                }`}
-              >
-                {l.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div>
-            <label className="label">主要玩法</label>
-            <div className="grid grid-cols-2 gap-2">
-              {PLAYSTYLES.map((p) => (
-                <button
-                  key={p.value}
-                  type="button"
-                  onClick={() => set("playstyle", p.value)}
-                  className={`rounded-lg border px-3 py-2 text-sm transition ${
-                    form.playstyle === p.value
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-line bg-panel-2 text-dim hover:text-fg"
-                  }`}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <label className="label">惯用手</label>
-            <div className="grid grid-cols-2 gap-2">
-              {(["left", "right"] as const).map((h) => (
-                <button
-                  key={h}
-                  type="button"
-                  onClick={() => set("hand", h)}
-                  className={`rounded-lg border px-3 py-2 text-sm transition ${
-                    form.hand === h
-                      ? "border-accent bg-accent/10 text-accent"
-                      : "border-line bg-panel-2 text-dim hover:text-fg"
-                  }`}
-                >
-                  {h === "left" ? "左手" : "右手"}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
         {/* 模式 */}

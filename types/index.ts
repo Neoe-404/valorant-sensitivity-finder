@@ -1,7 +1,6 @@
-export type { PlayerSettings, TestMode, SkillLevel, PlayStyle, Hand } from "./settings";
-export { DEFAULT_SETTINGS, SKILL_LEVELS, PLAYSTYLES, TEST_MODES } from "./settings";
+export type { PlayerSettings, TestMode } from "./settings";
+export { DEFAULT_SETTINGS, TEST_MODES } from "./settings";
 export type {
-  PointSample,
   FlickTargetRecord,
   FlickResult,
   FlickScoreBreakdown,
@@ -11,7 +10,6 @@ export type {
   MicroTargetRecord,
   MicroResult,
   MicroScoreBreakdown,
-  TestSuiteResult,
   CalibrationResult,
 } from "./aim";
 export type {

@@ -40,11 +40,6 @@ export function virtualSensitivityScale(
   return (candidateSensitivity * DEGREES_PER_COUNT_PER_SENS * screenWidth) / VALORANT_H_FOV;
 }
 
-export interface Vec2 {
-  x: number;
-  y: number;
-}
-
 /** eDPI = DPI × Sensitivity */
 export function eDpi(dpi: number, sensitivity: number): number {
   return dpi * sensitivity;
@@ -58,12 +53,6 @@ export function sensitivityMultiplier(candidateSensitivity: number, baseSensitiv
 
 export function dist2d(x1: number, y1: number, x2: number, y2: number): number {
   return Math.hypot(x2 - x1, y2 - y1);
-}
-
-export function distSquared(x1: number, y1: number, x2: number, y2: number): number {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  return dx * dx + dy * dy;
 }
 
 /** 路径总长度，points 为按时间排序的采样点 */

@@ -6,13 +6,6 @@
 
 /* ---------- 通用 ---------- */
 
-/** 坐标采样点（毫秒时间戳） */
-export interface PointSample {
-  t: number;
-  x: number;
-  y: number;
-}
-
 /* ---------- Flick Test ---------- */
 
 export interface FlickTargetRecord {
@@ -174,20 +167,6 @@ export interface MicroResult {
 }
 
 /* ---------- 综合 ---------- */
-
-export interface TestSuiteResult {
-  candidateSensitivity: number;
-  multiplier: number;
-  flick: FlickResult;
-  tracking: TrackingResult;
-  micro: MicroResult;
-  flickScore: number;
-  trackingScore: number;
-  microScore: number;
-  consistencyScore: number;
-  penalties: number;
-  overallScore: number;
-}
 
 /** 一次校准结果（不计入正式成绩，只建立基线） */
 export interface CalibrationResult {

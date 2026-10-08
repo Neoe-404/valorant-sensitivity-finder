@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, PLAYSTYLES, SKILL_LEVELS } from "../types/settings";
+import { DEFAULT_SETTINGS } from "../types/settings";
 import type { HistoryRecord, PlayerSettings, SessionSnapshot } from "../types";
 import { MAX_SENS, MIN_SENS } from "./mouse-math";
 
@@ -22,11 +22,6 @@ export function parsePlayerSettings(value: unknown): PlayerSettings | null {
     dpi: value.dpi,
     baseSensitivity: value.baseSensitivity as number,
     mode: mode(value.mode) ? value.mode as PlayerSettings["mode"] : DEFAULT_SETTINGS.mode,
-    skillLevel: SKILL_LEVELS.some((item) => item.value === value.skillLevel)
-      ? value.skillLevel as PlayerSettings["skillLevel"] : DEFAULT_SETTINGS.skillLevel,
-    playstyle: PLAYSTYLES.some((item) => item.value === value.playstyle)
-      ? value.playstyle as PlayerSettings["playstyle"] : DEFAULT_SETTINGS.playstyle,
-    hand: value.hand === "left" ? "left" : "right",
     screenWidth: between(value.screenWidth, 1, 30000) ? value.screenWidth : DEFAULT_SETTINGS.screenWidth,
     screenHeight: between(value.screenHeight, 1, 30000) ? value.screenHeight : DEFAULT_SETTINGS.screenHeight,
     crosshairColor: typeof value.crosshairColor === "string" && /^#[0-9a-f]{6}$/i.test(value.crosshairColor)
@@ -63,4 +58,25 @@ export function isHistoryRecord(value: unknown): value is HistoryRecord {
     between(value.dpi, 50, 20000) && number(value.eDpi) && between(value.rounds, 1, 4) &&
     ["flick", "tracking", "micro", "overall", "confidence"].every((key) => score(value[key])) &&
     label(value.confidenceLabel) && isSessionSnapshot(value.snapshot) && value.snapshot.id === value.id;
+}
+
+/**
+ * 设置表单校验（与 parsePlayerSettings 共享同一套边界规则）。
+ * 返回错误消息列表，空数组表示通过。
+ */
+export function validateSettingsInput(input: { dpi: number; baseSensitivity: number }): string[] {
+  const errs: string[] = [];
+  const dpi = Number(input.dpi);
+  const sens = Number(input.baseSensitivity);
+  if (!input.dpi || String(input.dpi).trim() === "" || Number.isNaN(dpi)) {
+    errs.push("请输入鼠标 DPI（正整数）");
+  } else if (!Number.isInteger(dpi) || dpi < 50 || dpi > 20000) {
+    errs.push("DPI 应为 50 ~ 20000 之间的整数");
+  }
+  if (!input.baseSensitivity || String(input.baseSensitivity).trim() === "" || Number.isNaN(sens)) {
+    errs.push("请输入当前 VALORANT 灵敏度");
+  } else if (sens < MIN_SENS || sens > MAX_SENS) {
+    errs.push(`灵敏度应在 ${MIN_SENS} ~ ${MAX_SENS} 之间`);
+  }
+  return errs;
 }

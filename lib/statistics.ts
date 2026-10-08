@@ -34,30 +34,8 @@ export function cv(values: number[]): number {
   return standardDeviation(values) / m;
 }
 
-export function variance(values: number[]): number {
-  const s = standardDeviation(values);
-  return s * s;
-}
-
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-/** 归一化到 0~1（max===min 时返回 1） */
-export function normalize(value: number, min: number, max: number): number {
-  if (max === min) return 1;
-  return clamp((value - min) / (max - min), 0, 1);
-}
-
-/** 线性映射 */
-export function linearMap(
-  value: number,
-  inMin: number,
-  inMax: number,
-  outMin: number,
-  outMax: number
-): number {
-  return outMin + normalize(value, inMin, inMax) * (outMax - outMin);
 }
 
 export function percentile(values: number[], p: number): number {
@@ -68,11 +46,6 @@ export function percentile(values: number[], p: number): number {
   const hi = Math.ceil(idx);
   if (lo === hi) return a[lo];
   return a[lo] + (a[hi] - a[lo]) * (idx - lo);
-}
-
-/** 向量长度 */
-export function hypot2(dx: number, dy: number): number {
-  return Math.hypot(dx, dy);
 }
 
 export function roundTo(value: number, decimals = 3): number {

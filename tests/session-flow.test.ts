@@ -17,6 +17,7 @@ vi.mock("react", () => ({
     }];
   },
   useCallback: (fn: unknown) => fn,
+  useEffect: (effect: () => void) => { effect(); },
 }));
 
 import { useSensitivitySession } from "../hooks/useSensitivitySession";

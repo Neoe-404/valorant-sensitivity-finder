@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SensitivitySearch } from "@/lib/sensitivity-engine";
 import { buildAimProfile, buildAnalysis } from "@/lib/analysis-engine";
 import { addHistoryRecord, makeId, saveLastSession } from "@/lib/storage";
@@ -28,15 +28,10 @@ export interface SessionFlowState {
   multiplier: number;
   /** 0=Flick 1=Tracking 2=Micro */
   testIndex: number;
-  /** 已完成候选数 */
-  candidatesDone: number;
-  /** 已完成轮数 */
-  roundsDone: number;
 }
 
 export interface SessionFlow {
   state: SessionFlowState;
-  calibration: CalibrationResult | null;
   recordTestResult: (result: FlickResult | TrackingResult | MicroResult) => void;
   finishCalibration: (cal: CalibrationResult) => void;
   finalSnapshot: SessionSnapshot | null;
@@ -72,11 +67,12 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
     currentSensitivity: settings.baseSensitivity,
     multiplier: 1,
     testIndex: 0,
-    candidatesDone: 0,
-    roundsDone: 0,
   });
   const stateRef = useRef(state);
-  stateRef.current = state;
+  // 渲染期不写 ref；effect 中同步最新状态，事件回调内仍可读到最新值
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   const [final, setFinal] = useState<{ snapshot: SessionSnapshot; history: HistoryRecord } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,8 +92,6 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
         currentSensitivity: first[0],
         multiplier: scaleOf(first[0]),
         testIndex: 0,
-        candidatesDone: 0,
-        roundsDone: 0,
       }));
     },
     [settings.baseSensitivity, settings.dpi, settings.mode, scaleOf]
@@ -216,7 +210,6 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
           testIndex: 0,
           currentSensitivity: sens,
           multiplier: scaleOf(sens),
-          candidatesDone: s.candidatesDone + 1,
         });
         return;
       }
@@ -236,8 +229,6 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
         testIndex: 0,
         currentSensitivity: sens,
         multiplier: scaleOf(sens),
-        candidatesDone: s.candidatesDone + 1,
-        roundsDone: search.currentRound - 1,
       });
     },
     [finalize, scaleOf]
@@ -245,7 +236,6 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
 
   return {
     state,
-    calibration: calRef.current,
     recordTestResult,
     finishCalibration,
     finalSnapshot: final?.snapshot ?? null,
