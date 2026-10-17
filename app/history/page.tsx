@@ -42,6 +42,7 @@ export default function HistoryPage() {
   }, [refresh]);
 
   const onDelete = (id: string) => {
+    if (!window.confirm("确定删除这条记录？此操作不可恢复。")) return;
     setError(deleteHistoryRecord(id) === null ? "删除未能完成，请检查浏览器存储后重试。" : null);
     refresh();
   };

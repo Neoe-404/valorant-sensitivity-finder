@@ -17,7 +17,6 @@ export type {
   CandidateMetrics,
   SensitivityRecommendation,
   ConfidenceLabel,
-  RoundResult,
   SessionSnapshot,
   HistoryRecord,
 } from "./sensitivity";

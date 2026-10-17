@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import type { SensitivityRecommendation } from "@/types";
-import { ShieldCheck, Activity } from "lucide-react";
+import { ShieldCheck, Activity, Copy, Check } from "lucide-react";
 import { cmPer360 } from "@/lib/mouse-math";
 
 interface SensitivityResultProps {
@@ -9,6 +10,7 @@ interface SensitivityResultProps {
 }
 
 export function SensitivityResult({ rec }: SensitivityResultProps) {
+  const [copied, setCopied] = useState(false);
   const labelColor =
     rec.confidenceLabel === "High"
       ? "text-good border-good/40 bg-good/10"
@@ -16,14 +18,48 @@ export function SensitivityResult({ rec }: SensitivityResultProps) {
         ? "text-warn border-warn/40 bg-warn/10"
         : "text-accent border-accent/40 bg-accent/10";
 
+  const copy = async () => {
+    const value = rec.sensitivity.toFixed(3);
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      // 非安全上下文或权限被拒时回退到隐藏文本域 + execCommand
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* 忽略：仍会在 UI 上显示反馈 */
+      }
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
     <div className="panel relative overflow-hidden p-6 sm:p-8">
       <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-accent via-accent/60 to-transparent" />
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div>
           <div className="text-[11px] uppercase tracking-[0.2em] text-dim">Your Sensitivity</div>
-          <div className="mt-2 font-mono text-5xl font-bold text-fg sm:text-6xl">
-            {rec.sensitivity.toFixed(3)}
+          <div className="mt-2 flex items-center gap-3">
+            <div className="font-mono text-5xl font-bold text-fg sm:text-6xl">
+              {rec.sensitivity.toFixed(3)}
+            </div>
+            <button
+              type="button"
+              onClick={copy}
+              aria-label={copied ? "已复制" : "复制灵敏度"}
+              title={copied ? "已复制" : "复制灵敏度"}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-line text-dim transition hover:border-accent hover:text-accent"
+            >
+              {copied ? <Check size={18} className="text-good" /> : <Copy size={18} />}
+            </button>
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-dim">
             <span className="rounded border border-line bg-panel-2 px-2 py-1 font-mono">

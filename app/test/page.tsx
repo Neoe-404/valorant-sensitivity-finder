@@ -318,7 +318,7 @@ function PauseOverlay({ onRestart, onQuit }: { onRestart: () => void; onQuit: ()
           测试已暂停，暂停时间不计分。恢复时重做当前目标；跟踪测试会重新开始这一段。
         </p>
         <div className="mt-6 grid gap-2.5">
-          <button className="btn-primary" onClick={aim.resume}>
+          <button className="btn-primary" onClick={aim.resume} autoFocus>
             <Play size={16} /> 恢复测试
           </button>
           <button className="btn-ghost" onClick={onRestart}>

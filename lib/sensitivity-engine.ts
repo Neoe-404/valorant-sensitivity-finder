@@ -15,7 +15,7 @@
  *    共同决定，单一候选池或过窄区间会降级。
  */
 
-import { clamp, roundTo } from "./statistics";
+import { clamp } from "./statistics";
 import { clampSensitivity, roundSensitivity, sensitivityMultiplier } from "./mouse-math";
 import {
   computeOverallScore,
@@ -23,7 +23,7 @@ import {
   consistencyFor,
 } from "./scoring";
 import type { FlickResult, MicroResult, TrackingResult } from "@/types";
-import type { CandidateScore, ConfidenceLabel, RoundResult, SensitivityRecommendation } from "@/types";
+import type { CandidateScore, ConfidenceLabel, SensitivityRecommendation } from "@/types";
 
 /** 各轮步长（相对中心的比例） */
 export const ROUND_STEPS = [0.2, 0.12, 0.08, 0.05, 0.03];
@@ -190,7 +190,7 @@ export class SensitivitySearch {
    * 全部候选完成后统一重算每个候选的置信度。
    * 候选置信度依赖"与其他候选的分数差距"，必须在最终候选池确定后计算。
    */
-  recomputeConfidence(): void {
+  private recomputeConfidence(): void {
     for (const card of this.candidates) {
       if (card.finished) card.confidence = this.candidateConfidence(card);
     }
@@ -280,19 +280,6 @@ export class SensitivitySearch {
     };
   }
 
-  /** 返回本轮结果快照（供 UI/测试） */
-  roundResult(): RoundResult {
-    const candidates = [...this.candidates];
-    return {
-      round: this.currentRound,
-      candidates,
-      best: this.bestCandidate(),
-      nextCenter: this.done ? null : roundTo(this.weightedCenter(), 4),
-      step: this.stepFor(this.currentRound),
-      done: this.done,
-      recommendation: this.done && candidates.some((c) => (c.overallScore ?? 0) > 0) ? this.recommend() : null,
-    };
-  }
 }
 
 export function labelFor(confidence: number): ConfidenceLabel {

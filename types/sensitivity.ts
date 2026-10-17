@@ -48,17 +48,6 @@ export interface SensitivityRecommendation {
   reason: string;
 }
 
-/** 轮次搜索结果：本轮结束后的更新 */
-export interface RoundResult {
-  round: number;
-  candidates: CandidateScore[];
-  best: CandidateScore | null;
-  nextCenter: number | null;
-  step: number;
-  done: boolean;
-  recommendation: SensitivityRecommendation | null;
-}
-
 export interface SessionSnapshot {
   id: string;
   createdAt: number;
