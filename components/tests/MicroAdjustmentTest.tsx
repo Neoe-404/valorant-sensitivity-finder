@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { useAim, type ActiveTestApi, type FrameData, type Scene } from "@/components/aim/AimArena";
+import { useRef } from "react";
+import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeMicroScore } from "@/lib/scoring";
 import { clamp } from "@/lib/statistics";
 import { MICRO_RADIUS, configFor, dist, mulberry32 } from "./shared";
+import { useActiveTest } from "@/hooks/useActiveTest";
 import type { MicroResult, MicroTargetRecord, TestMode } from "@/types";
 import type { SceneTarget } from "@/components/aim/Target";
 
@@ -20,7 +21,6 @@ interface MicroAdjustmentTestProps {
  */
 export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestProps) {
   const aim = useAim();
-  const { registerActive } = aim;
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
@@ -126,7 +126,7 @@ export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestPro
       s.holdErrSum += d;
       s.holdMax = Math.max(s.holdMax, d);
       if (f.now - s.holdStart >= s.holdMs) {
-        hit(f);
+        hit(f, scene);
         scene.targets = [];
         return;
       }
@@ -146,7 +146,7 @@ export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestPro
     };
   };
 
-  const hit = (f: FrameData) => {
+  const hit = (f: FrameData, scene: Scene) => {
     const rec = s.rec!;
     rec.hitTime = f.now;
     rec.holdStartTime = rec.hitTime - s.holdMs;
@@ -156,6 +156,9 @@ export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestPro
     rec.completionTime = f.now - rec.spawnTime;
     rec.corrections = Math.min(8, rec.corrections);
     s.records.push({ ...rec });
+    // 命中反馈：目标处短暂淡出的绿色标记
+    if (!scene.hitMarks) scene.hitMarks = [];
+    scene.hitMarks.push({ x: rec.targetX, y: rec.targetY, t: f.now, hit: true });
     s.target = null;
     s.rec = null;
 
@@ -177,17 +180,7 @@ export function MicroAdjustmentTest({ mode, onComplete }: MicroAdjustmentTestPro
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };
 
-  const apiRef = useRef<ActiveTestApi>({ onFrame, onPointerDown: () => {}, onReset });
-  apiRef.current = { onFrame, onPointerDown: () => {}, onReset };
-
-  useEffect(() => {
-    registerActive({
-      onFrame: (f, scene) => apiRef.current.onFrame(f, scene),
-      onPointerDown: (x, y, scene) => apiRef.current.onPointerDown(x, y, scene),
-      onReset: () => apiRef.current.onReset?.(),
-    });
-    return () => registerActive(null);
-  }, [registerActive]);
+  useActiveTest({ onFrame, onPointerDown: () => {}, onReset });
 
   return null;
 }

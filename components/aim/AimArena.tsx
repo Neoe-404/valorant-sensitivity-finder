@@ -22,9 +22,19 @@ export interface TrailPoint {
   t: number;
 }
 
+/** 命中/未命中反馈标记，绘制后约 0.25s 内淡出。 */
+export interface HitMark {
+  x: number;
+  y: number;
+  t: number;
+  hit: boolean;
+}
+
 export interface Scene {
   targets: SceneTarget[];
   trail: TrailPoint[];
+  /** 命中反馈标记（由测试组件写入，绘制层消费） */
+  hitMarks?: HitMark[];
   /** 测试进度（HUD 轮询） */
   progress?: { done: number; total: number; label: string };
 }
@@ -280,6 +290,43 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         drawTarget(ctx, t, now);
       }
 
+      // 命中/未命中反馈（短暂扩散环 + 勾/叉）
+      const marks = scene.hitMarks;
+      if (marks && marks.length) {
+        const LIFE = 0.28;
+        for (let i = marks.length - 1; i >= 0; i--) {
+          const m = marks[i];
+          const age = (now - m.t) / 1000;
+          if (age > LIFE) {
+            marks.splice(i, 1);
+            continue;
+          }
+          const p = age / LIFE; // 0→1
+          const alpha = 1 - p;
+          const radius = 14 + p * 22;
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = m.hit ? "#52f485" : "#f43f4e";
+          ctx.beginPath();
+          ctx.arc(m.x, m.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+          // 中心符号
+          ctx.beginPath();
+          if (m.hit) {
+            ctx.moveTo(m.x - 5, m.y);
+            ctx.lineTo(m.x - 1, m.y + 4);
+            ctx.lineTo(m.x + 6, m.y - 5);
+          } else {
+            ctx.moveTo(m.x - 4, m.y - 4);
+            ctx.lineTo(m.x + 4, m.y + 4);
+            ctx.moveTo(m.x + 4, m.y - 4);
+            ctx.lineTo(m.x - 4, m.y + 4);
+          }
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
       // 准星（站在目标上的视觉层级）；暂停时半透明保留定位参考
       if (running) {
         drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
@@ -443,12 +490,20 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         style={{ touchAction: "none" }}
       >
         <canvas ref={canvasRef} className="absolute inset-0" aria-label="瞄准测试区域" />
-        {lockError || (locked && !rawInput) ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-6 z-[80] flex justify-center">
-            <div className="rounded-lg border border-warn/50 bg-black/80 px-4 py-2 text-xs text-warn shadow-xl">
-              {lockError
-                ? "指针锁定失败，测试尚未开始。若刚按过 Esc，浏览器会短暂限制重新锁定，请等待约 1 秒后重试；也可换用支持鼠标锁定的桌面浏览器。"
-                : "当前使用普通鼠标锁定，系统指针加速可能影响手感。"}
+        {lockError ? (
+          <div className="pointer-events-none absolute inset-x-0 top-24 z-[80] flex justify-center px-4">
+            <div className="max-w-md rounded-xl border border-warn/50 bg-black/85 px-5 py-4 text-center text-sm text-warn shadow-2xl backdrop-blur-sm">
+              <div className="font-semibold">指针锁定失败，测试尚未开始</div>
+              <p className="mt-1.5 text-xs leading-relaxed text-warn/90">
+                若刚按过 Esc，浏览器会短暂限制重新锁定，请等待约 1 秒后再点击「开始」。
+                也可换用支持鼠标锁定的桌面浏览器（Chrome / Edge / Firefox）后重试。
+              </p>
+            </div>
+          </div>
+        ) : locked && !rawInput ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-6 z-[80] flex justify-center px-4">
+            <div className="rounded-lg border border-warn/50 bg-black/80 px-4 py-2 text-center text-xs text-warn shadow-xl">
+              当前使用普通鼠标锁定，系统指针加速可能影响手感与结果准确性。
             </div>
           </div>
         ) : null}

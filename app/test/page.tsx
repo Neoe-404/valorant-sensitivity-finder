@@ -12,7 +12,7 @@ import { DebugPanel } from "@/components/DebugPanel";
 import { useSensitivitySession } from "@/hooks/useSensitivitySession";
 import { loadSettings } from "@/lib/storage";
 import { DEFAULT_SETTINGS } from "@/types";
-import { virtualSensitivityScale, cmPer360 } from "@/lib/mouse-math";
+import { virtualSensitivityScale, cmPer360, eDpi } from "@/lib/mouse-math";
 import { Crosshair, Pause, Play, RotateCcw, X } from "lucide-react";
 import type { CalibrationResult, FlickResult, MicroResult, PlayerSettings, TrackingResult } from "@/types";
 
@@ -62,6 +62,17 @@ export default function TestPage() {
     }
   }, [flow.state.stage, flow.finalHistory, router]);
 
+  const exportSnapshot = useCallback(() => {
+    const snap = flow.finalSnapshot;
+    if (!snap) return;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `sensitivity-result-${snap.id}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, [flow.finalSnapshot]);
+
   const onCalibrationComplete = useCallback(
     (cal: CalibrationResult) => flow.finishCalibration(cal),
     [flow]
@@ -109,6 +120,7 @@ export default function TestPage() {
       settings.dpi,
       settings.screenWidth
     );
+    const baseEDpi = Math.round(eDpi(settings.dpi, settings.baseSensitivity));
     return (
       <ArenaScreen
         key={`cal-${epoch}`}
@@ -120,14 +132,14 @@ export default function TestPage() {
         <CalibrationTest mode={settings.mode} onComplete={onCalibrationComplete} />
         <TopHud
           title="CALIBRATION"
-          subtitle={`模拟你当前灵敏度 ${settings.baseSensitivity.toFixed(3)} · eDPI ${Math.round(settings.dpi * settings.baseSensitivity)}`}
+          subtitle={`模拟你当前灵敏度 ${settings.baseSensitivity.toFixed(3)} · eDPI ${baseEDpi}`}
           round="SPEED BASELINE"
           candidate={settings.baseSensitivity.toFixed(3)}
-          eDpi={Math.round(settings.dpi * settings.baseSensitivity)}
+          eDpi={baseEDpi}
         />
         <ReadyOverlay
           title="CALIBRATION"
-          description={`先熟悉虚拟准星：它现在按你的真实参数模拟 —— 灵敏度 ${settings.baseSensitivity.toFixed(3)} @ DPI ${settings.dpi}（eDPI ${Math.round(settings.dpi * settings.baseSensitivity)}，约 ${cmPer360(settings.dpi, settings.baseSensitivity).toFixed(1)} cm/360°）。快速点击随机目标，建立移动与点击基线，不计入正式成绩。`}
+          description={`先熟悉虚拟准星：它现在按你的真实参数模拟 —— 灵敏度 ${settings.baseSensitivity.toFixed(3)} @ DPI ${settings.dpi}（eDPI ${baseEDpi}，约 ${cmPer360(settings.dpi, settings.baseSensitivity).toFixed(1)} cm/360°）。快速点击随机目标，建立移动与点击基线，不计入正式成绩。`}
           cta="开始校准（锁定鼠标）"
         />
         <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/setup")} />
@@ -138,6 +150,7 @@ export default function TestPage() {
 
   if (flow.state.stage === "testing") {
     const s = flow.state;
+    const candEDpi = Math.round(eDpi(settings.dpi, s.currentSensitivity));
     return (
       <ArenaScreen
         key={`${s.round}-${s.candidateIndex}-${s.testIndex}-${epoch}`}
@@ -154,11 +167,11 @@ export default function TestPage() {
           subtitle={`Round ${s.round} · Candidate ${s.candidateIndex + 1}/${s.roundCandidates.length}`}
           round={`ROUND ${s.round}`}
           candidate={s.currentSensitivity.toFixed(3)}
-          eDpi={Math.round(s.currentSensitivity * settings.dpi)}
+          eDpi={candEDpi}
         />
         <ReadyOverlay
           title={TEST_NAMES[s.testIndex]}
-          description={`第 ${s.round} 轮 · 候选灵敏度 ${s.currentSensitivity.toFixed(3)}（eDPI ${Math.round(s.currentSensitivity * settings.dpi)}，约 ${cmPer360(settings.dpi, s.currentSensitivity).toFixed(1)} cm/360°）。规则：${testHint(s.testIndex, settings.mode)}`}
+          description={`第 ${s.round} 轮 · 候选灵敏度 ${s.currentSensitivity.toFixed(3)}（eDPI ${candEDpi}，约 ${cmPer360(settings.dpi, s.currentSensitivity).toFixed(1)} cm/360°）。规则：${testHint(s.testIndex, settings.mode)}`}
           cta="锁定鼠标并开始"
         />
         <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/history")} />
@@ -183,6 +196,13 @@ export default function TestPage() {
       <div className="text-center">
         <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-line border-t-accent" />
         <p className="mt-4 text-sm text-dim">正在计算推荐结果…</p>
+        {flow.storageSaved === false ? (
+          <div role="alert" className="panel mx-auto mt-6 max-w-sm border-warn/50 p-4 text-sm text-warn">
+            结果未能保存到本地历史（浏览器存储可能已满或被禁用）。
+            <button className="btn-ghost ml-3" onClick={exportSnapshot}>导出结果</button>
+            <p className="mt-2 text-[11px] text-dim/80">刷新或关闭页面前请先导出。</p>
+          </div>
+        ) : null}
       </div>
     </main>
   );
@@ -332,6 +352,3 @@ function PauseOverlay({ onRestart, onQuit }: { onRestart: () => void; onQuit: ()
     </div>
   );
 }
-
-/* ---------- 进度轮询（连接 Canvas 场景与 React HUD） ---------- */
-/* HUD 组件内直接使用 aim.sceneRef 轮询，此处无额外实现。 */

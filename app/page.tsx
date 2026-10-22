@@ -1,13 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { LazyMotion, domAnimation, m } from "framer-motion";
 import { Crosshair, MousePointerClick, FlaskConical, LineChart, ShieldAlert, ArrowRight, Radar } from "lucide-react";
+import { Reveal } from "@/components/layout/Reveal";
 
 export default function HomePage() {
   return (
-    <LazyMotion features={domAnimation} strict>
-      <main className="relative min-h-screen overflow-hidden">
+    <main className="relative min-h-screen overflow-hidden">
       {/* 背景装饰 */}
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute left-1/2 top-[-10%] h-[500px] w-[900px] -translate-x-1/2 rounded-full bg-accent/10 blur-[120px]" />
@@ -25,53 +24,28 @@ export default function HomePage() {
       <div className="relative mx-auto max-w-6xl px-4 sm:px-6">
         {/* ===== Hero ===== */}
         <section className="flex min-h-[72vh] flex-col items-center justify-center py-20 text-center">
-          <m.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="chip mb-8"
-          >
+          <Reveal as="div" className="chip mb-8">
             <Radar size={13} className="text-accent" />
             Personal Optimization Tool · 不是 eDPI 计算器
-          </m.div>
+          </Reveal>
 
-          <m.h1
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.05 }}
-            className="max-w-3xl text-4xl font-bold leading-tight tracking-tight sm:text-6xl"
-          >
+          <Reveal as="h1" delay={0.05} className="max-w-3xl text-4xl font-bold leading-tight tracking-tight sm:text-6xl">
             找到真正适合你的
             <br />
             VALORANT 灵敏度
-          </m.h1>
+          </Reveal>
 
-          <m.p
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.15 }}
-            className="mt-6 max-w-xl text-base text-dim sm:text-lg"
-          >
+          <Reveal as="p" delay={0.15} className="mt-6 max-w-xl text-base text-dim sm:text-lg">
             不是复制职业选手参数。
             <br className="hidden sm:block" />
             通过你的实际鼠标控制表现寻找答案。
-          </m.p>
+          </Reveal>
 
-          <m.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.6, delay: 0.25 }}
-            className="mt-2 font-mono text-xs text-dim"
-          >
+          <Reveal as="p" variant="fade" delay={0.25} className="mt-2 font-mono text-xs text-dim">
             Pointer Lock · movementX/Y · Virtual Sensitivity Multiplier
-          </m.p>
+          </Reveal>
 
-          <m.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.3 }}
-            className="mt-10 flex flex-wrap items-center justify-center gap-4"
-          >
+          <Reveal delay={0.3} className="mt-10 flex flex-wrap items-center justify-center gap-4">
             <Link href="/setup" className="btn-primary text-base">
               <Crosshair size={16} />
               Find My Sensitivity
@@ -79,32 +53,23 @@ export default function HomePage() {
             <a href="#how" className="btn-ghost">
               查看原理
             </a>
-          </m.div>
+          </Reveal>
 
-          <m.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.8, delay: 0.45 }}
-            className="mt-14 flex items-center gap-6 font-mono text-[11px] uppercase tracking-widest text-dim/70"
-          >
+          <Reveal variant="fade" delay={0.45} className="mt-14 flex items-center gap-6 font-mono text-[11px] uppercase tracking-widest text-dim/70">
             <span>Flick Test</span>
             <span className="text-accent">·</span>
             <span>Tracking Test</span>
             <span className="text-accent">·</span>
             <span>Micro Adjustment</span>
-          </m.div>
+          </Reveal>
         </section>
 
         {/* ===== How It Works ===== */}
-        <section id="how" className="py-16">
-          <m.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-80px" }}
-          >
+        <section id="how" className="scroll-mt-16 py-16">
+          <Reveal as="div">
             <h2 className="text-4xl font-bold tracking-tight">Sensitivity is Personal.</h2>
             <p className="mt-2 text-dim">每个人的灵敏度都应该不同。三步找出你的答案。</p>
-          </m.div>
+          </Reveal>
 
           <div className="mt-10 grid gap-4 md:grid-cols-3">
             {[
@@ -127,12 +92,9 @@ export default function HomePage() {
                 desc: "搜索算法逐轮缩小范围，输出推荐灵敏度、区间、eDPI 与置信度。",
               },
             ].map((s, i) => (
-              <m.div
+              <Reveal
                 key={s.title}
-                initial={{ opacity: 0, y: 24 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.12 }}
+                delay={i * 0.12}
                 className="panel group relative overflow-hidden p-6 transition hover:border-accent/40"
               >
                 <div className="absolute right-0 top-0 h-24 w-24 -translate-y-1/2 translate-x-1/2 rounded-full bg-accent/10 blur-2xl transition group-hover:bg-accent/20" />
@@ -141,17 +103,15 @@ export default function HomePage() {
                   {s.title} <span className="ml-1 text-sm font-normal text-dim">{s.cn}</span>
                 </div>
                 <p className="mt-2 text-sm leading-relaxed text-dim">{s.desc}</p>
-              </m.div>
+              </Reveal>
             ))}
           </div>
         </section>
 
         {/* ===== Result Demo ===== */}
         <section className="py-16">
-          <m.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true, margin: "-80px" }}
+          <Reveal
+            as="div"
             className="panel relative overflow-hidden p-8 sm:p-10"
           >
             <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-accent via-accent/60 to-transparent" />
@@ -176,17 +136,12 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
-          </m.div>
+          </Reveal>
         </section>
 
         {/* ===== Why not copy pro settings ===== */}
         <section className="py-16 pb-28">
-          <m.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            viewport={{ once: true }}
-            className="max-w-3xl"
-          >
+          <Reveal as="div" className="max-w-3xl">
             <div className="flex items-center gap-3">
               <ShieldAlert size={20} className="text-warn" />
               <h2 className="text-2xl font-bold tracking-tight">Why not copy pro settings?</h2>
@@ -206,10 +161,9 @@ export default function HomePage() {
             <Link href="/setup" className="btn-primary mt-8">
               开始测试 <ArrowRight size={16} />
             </Link>
-          </m.div>
+          </Reveal>
         </section>
       </div>
-      </main>
-    </LazyMotion>
+    </main>
   );
 }

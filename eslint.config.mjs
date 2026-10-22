@@ -17,5 +17,5 @@ export default defineConfig([
       "react-hooks/set-state-in-render": "off",
     },
   },
-  globalIgnores([".next/**", "node_modules/**", "out/**", "build/**", "coverage/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", ".next-verify/**", "node_modules/**", "out/**", "build/**", "coverage/**", "next-env.d.ts"]),
 ]);

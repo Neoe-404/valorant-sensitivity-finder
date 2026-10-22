@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { useAim, type ActiveTestApi, type FrameData, type Scene } from "@/components/aim/AimArena";
+import { useRef } from "react";
+import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { CAL_RADIUS, configFor, dist, mulberry32 } from "./shared";
+import { useActiveTest } from "@/hooks/useActiveTest";
 import type { CalibrationResult, TestMode } from "@/types";
 import type { SceneTarget } from "@/components/aim/Target";
 
@@ -18,7 +19,6 @@ interface CalibrationTestProps {
  */
 export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
   const aim = useAim();
-  const { registerActive } = aim;
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
@@ -132,17 +132,7 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };
 
-  const apiRef = useRef<ActiveTestApi>({ onFrame, onPointerDown, onReset });
-  apiRef.current = { onFrame, onPointerDown, onReset };
-
-  useEffect(() => {
-    registerActive({
-      onFrame: (f, scene) => apiRef.current.onFrame(f, scene),
-      onPointerDown: (x, y, scene) => apiRef.current.onPointerDown(x, y, scene),
-      onReset: () => apiRef.current.onReset?.(),
-    });
-    return () => registerActive(null);
-  }, [registerActive]);
+  useActiveTest({ onFrame, onPointerDown, onReset });
 
   return null;
 }

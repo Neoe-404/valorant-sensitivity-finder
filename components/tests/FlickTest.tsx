@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { useAim, type ActiveTestApi, type FrameData, type Scene } from "@/components/aim/AimArena";
+import { useRef } from "react";
+import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeFlickScore } from "@/lib/scoring";
 import { FLICK_RADIUS, configFor, dist, randomSpawnPoint } from "./shared";
+import { useActiveTest } from "@/hooks/useActiveTest";
 import type { FlickResult, FlickTargetRecord, TestMode } from "@/types";
 import type { SceneTarget } from "@/components/aim/Target";
 
@@ -40,7 +41,6 @@ interface FlickState {
  */
 export function FlickTest({ mode, onComplete }: FlickTestProps) {
   const aim = useAim();
-  const { registerActive } = aim;
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
@@ -196,6 +196,9 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     rec.reactionTime = rec.firstMoveTime ? rec.firstMoveTime - rec.spawnTime : 0;
     rec.timeToTarget = rec.hitTime - rec.spawnTime;
     rec.correctionCount = Math.min(8, rec.correctionCount);
+    // 命中/未命中视觉反馈：在点击处画一个短暂淡出的标记
+    if (!scene.hitMarks) scene.hitMarks = [];
+    scene.hitMarks.push({ x, y, t: performance.now(), hit: rec.hit });
     s.records.push({ ...rec });
     s.target = null;
     s.rec = null;
@@ -221,19 +224,7 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };
 
-  const apiRef = useRef<ActiveTestApi>({ onFrame, onPointerDown, onReset });
-  apiRef.current = { onFrame, onPointerDown, onReset };
-
-  useEffect(() => {
-    registerActive({
-      onFrame: (f, scene) => apiRef.current.onFrame(f, scene),
-      onPointerDown: (x, y, scene) => apiRef.current.onPointerDown(x, y, scene),
-      onReset: () => apiRef.current.onReset?.(),
-    });
-    return () => {
-      registerActive(null);
-    };
-  }, [registerActive]);
+  useActiveTest({ onFrame, onPointerDown, onReset });
 
   return null;
 }

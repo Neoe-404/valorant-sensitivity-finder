@@ -44,12 +44,7 @@ function ResultsContent() {
     const snap = getSessionForResults(id);
     setSnapshot(snap);
     setUnsaved(Boolean(snap && !getHistoryRecord(snap.id)));
-    if (snap) {
-      setSnapshot(snap);
-      setPhase("ready");
-    } else {
-      setPhase("empty");
-    }
+    setPhase(snap ? "ready" : "empty");
   }, [searchParams]);
 
   if (phase === "loading") {
@@ -84,6 +79,10 @@ function ResultsContent() {
     .filter((c) => c.finished && c.overallScore !== null)
     .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
 
+  // 未完成的候选分数显示为「—」，避免与真实 0 分混淆
+  const scoreCell = (v: number | null) =>
+    v === null ? <span className="text-dim">—</span> : Math.round(v);
+
   const sevIcon = (s: string) =>
     s === "good" ? <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-good" /> : s === "warn" ? <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" /> : <Info size={15} className="mt-0.5 shrink-0 text-accent" />;
 
@@ -117,7 +116,14 @@ function ResultsContent() {
             <ScoreCard label="Consistency" value={Math.round(best.consistencyScore ?? 0)} tone="warn" />
             <ScoreCard label="Overall" value={Math.round(best.overallScore ?? 0)} tone="good" />
           </div>
-        ) : null}
+        ) : (
+          <div className="panel p-6 text-center text-sm text-dim">
+            暂无完整候选数据，可能本次测试未正常完成。
+            <div className="mt-3">
+              <Link href="/test" className="btn-ghost">再测一轮</Link>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* 画像 + 分析 */}
@@ -175,10 +181,10 @@ function ResultsContent() {
                   <td className="px-4 py-2.5 text-dim">{c.round}</td>
                   <td className="px-4 py-2.5 text-fg">{c.sensitivity.toFixed(3)}</td>
                   <td className="px-4 py-2.5 text-dim">×{c.multiplier.toFixed(2)}</td>
-                  <td className="px-4 py-2.5">{Math.round(c.flickScore ?? 0)}</td>
-                  <td className="px-4 py-2.5">{Math.round(c.trackingScore ?? 0)}</td>
-                  <td className="px-4 py-2.5">{Math.round(c.microScore ?? 0)}</td>
-                  <td className="px-4 py-2.5 font-bold text-good">{Math.round(c.overallScore ?? 0)}</td>
+                  <td className="px-4 py-2.5">{scoreCell(c.flickScore)}</td>
+                  <td className="px-4 py-2.5">{scoreCell(c.trackingScore)}</td>
+                  <td className="px-4 py-2.5">{scoreCell(c.microScore)}</td>
+                  <td className="px-4 py-2.5 font-bold text-good">{scoreCell(c.overallScore)}</td>
                 </tr>
               ))}
             </tbody>

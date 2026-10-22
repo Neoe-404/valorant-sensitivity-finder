@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ActiveTestApi, AimContextValue, FrameData, Scene } from "../components/aim/AimArena";
-import type { CalibrationResult, MicroResult, TrackingResult } from "../types";
+import type { CalibrationResult, FlickResult, MicroResult, TrackingResult } from "../types";
 
 // Exercise the real Canvas callbacks with a deterministic clock and hook host.
 // Browser input and React rendering are checked separately; these tests cover scene transitions.
@@ -14,6 +14,7 @@ vi.mock("../components/aim/AimArena", () => ({ useAim: () => host.aim }));
 import { TrackingTest } from "../components/tests/TrackingTest";
 import { CalibrationTest } from "../components/tests/CalibrationTest";
 import { MicroAdjustmentTest } from "../components/tests/MicroAdjustmentTest";
+import { FlickTest } from "../components/tests/FlickTest";
 import { drawTarget } from "../components/aim/Target";
 
 let now: number;
@@ -136,5 +137,39 @@ describe("micro target completion", () => {
     expect(t.y).toBeGreaterThanOrEqual(margin);
     expect(t.y).toBeLessThanOrEqual(1080 - margin);
     expect(Math.hypot(t.x - cursor.x, t.y - cursor.y)).toBeGreaterThanOrEqual(45);
+  });
+});
+
+describe("flick target completion", () => {
+  it("counts a hit for each target clicked within radius and completes once", () => {
+    const complete = vi.fn<(result: FlickResult) => void>();
+    FlickTest({ mode: "quick", onComplete: complete }); // 12 targets
+    for (let i = 0; i < 12; i++) {
+      frame(); // 生成目标
+      const t = scene.targets[0];
+      expect(t).toBeDefined();
+      // 命中反馈标记应被写入场景，由绘制层消费
+      active.onPointerDown(t.x, t.y, scene);
+      expect(scene.hitMarks).toHaveLength(1);
+      expect(scene.hitMarks![0].hit).toBe(true);
+      scene.hitMarks = [];
+    }
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0][0].hits).toBe(12);
+    expect(complete.mock.calls[0][0].misses).toBe(0);
+    frame();
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a miss when clicking outside the target radius", () => {
+    const complete = vi.fn<(result: FlickResult) => void>();
+    FlickTest({ mode: "quick", onComplete: complete });
+    frame();
+    const t = scene.targets[0];
+    // 点击目标外 200px（远超半径 36）
+    active.onPointerDown(t.x + 200, t.y, scene);
+    expect(scene.hitMarks![0].hit).toBe(false);
+    // 首个目标未命中 → 记录 1 miss，尚未完成（共 12 个）
+    expect(complete).not.toHaveBeenCalled();
   });
 });

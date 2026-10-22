@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { eDpi, cmPer360, virtualSensitivityScale, MIN_SENS, MAX_SENS } from "@/lib/mouse-math";
 import { loadSettings, saveSettings } from "@/lib/storage";
@@ -20,6 +20,7 @@ export default function SetupPage() {
   const [dpiText, setDpiText] = useState(String(DEFAULT_SETTINGS.dpi));
   const [sensText, setSensText] = useState(String(DEFAULT_SETTINGS.baseSensitivity));
   const [errors, setErrors] = useState<string[]>([]);
+  const errorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const saved = loadSettings();
@@ -50,10 +51,17 @@ export default function SetupPage() {
 
   const validate = (): string[] => validateSettingsInput({ dpi: form.dpi, baseSensitivity: form.baseSensitivity });
 
+  // 字段级错误：用于 aria-invalid 与红框标注
+  const dpiError = errors.find((e) => e.includes("DPI")) ?? null;
+  const sensError = errors.find((e) => e.includes("灵敏度")) ?? null;
+
   const submit = () => {
     const errs = validate();
     setErrors(errs);
-    if (errs.length > 0) return;
+    if (errs.length > 0) {
+      errorRef.current?.focus();
+      return;
+    }
     if (!saveSettings({ ...form, screenWidth: window.innerWidth, screenHeight: window.innerHeight })) {
       setErrors(["设置保存失败。请检查浏览器存储是否可用，或清理空间后重试。"]);
       return;
@@ -79,8 +87,14 @@ export default function SetupPage() {
       </header>
 
       {errors.length > 0 && (
-        <div className="panel mb-6 border-accent/50 p-4 text-sm text-accent">
-          <ul className="list-inside list-disc space-y-1">
+        <div
+          ref={errorRef}
+          role="alert"
+          tabIndex={-1}
+          className="panel mb-6 border-accent/50 p-4 text-sm text-accent outline-none"
+        >
+          <div className="font-semibold">请修正以下问题后再继续：</div>
+          <ul className="mt-1.5 list-inside list-disc space-y-1">
             {errors.map((e) => (
               <li key={e}>{e}</li>
             ))}
@@ -103,14 +117,20 @@ export default function SetupPage() {
               id="dpi"
               type="number"
               inputMode="numeric"
-              className="input font-mono"
+              className={`input font-mono ${dpiError ? "border-accent" : ""}`}
               value={dpiText}
+              aria-invalid={dpiError ? true : undefined}
+              aria-describedby={dpiError ? "dpi-error" : undefined}
               onChange={(e) => {
                 setDpiText(e.target.value);
                 set("dpi", Number(e.target.value));
               }}
+              onBlur={() => setErrors(validate())}
               placeholder="800"
             />
+            {dpiError && (
+              <p id="dpi-error" role="alert" className="mt-1.5 text-[11px] text-accent">{dpiError}</p>
+            )}
             <p className="mt-1.5 text-[11px] text-dim">可在鼠标驱动中查看（如 400 / 800 / 1600）</p>
           </div>
           <div>
@@ -122,14 +142,20 @@ export default function SetupPage() {
               min={MIN_SENS}
               max={MAX_SENS}
               inputMode="decimal"
-              className="input font-mono"
+              className={`input font-mono ${sensError ? "border-accent" : ""}`}
               value={sensText}
+              aria-invalid={sensError ? true : undefined}
+              aria-describedby={sensError ? "sens-error" : undefined}
               onChange={(e) => {
                 setSensText(e.target.value);
                 set("baseSensitivity", Number(e.target.value));
               }}
+              onBlur={() => setErrors(validate())}
               placeholder="0.35"
             />
+            {sensError && (
+              <p id="sens-error" role="alert" className="mt-1.5 text-[11px] text-accent">{sensError}</p>
+            )}
             <p className="mt-1.5 text-[11px] text-dim">设置 → 鼠标 → 灵敏度，保留 3 位小数</p>
           </div>
         </div>
@@ -201,18 +227,28 @@ export default function SetupPage() {
         <div>
           <label className="label">虚拟准星颜色</label>
           <div className="flex items-center gap-3">
-            {["#52f485", "#f43f4e", "#f5b942", "#38bdf8", "#ffffff"].map((c) => (
-              <button
-                key={c}
-                type="button"
-                aria-label={`crosshair color ${c}`}
-                onClick={() => set("crosshairColor", c)}
-                className={`h-9 w-9 rounded-full border-2 transition ${
-                  form.crosshairColor === c ? "border-white" : "border-transparent"
-                }`}
-                style={{ backgroundColor: c }}
-              />
-            ))}
+            {["#52f485", "#f43f4e", "#f5b942", "#38bdf8", "#ffffff"].map((c) => {
+              const active = form.crosshairColor === c;
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  aria-label={`crosshair color ${c}`}
+                  aria-pressed={active}
+                  onClick={() => set("crosshairColor", c)}
+                  className={`relative grid h-9 w-9 place-items-center rounded-full border-2 transition ${
+                    active ? "border-accent scale-110" : "border-transparent"
+                  }`}
+                  style={{ backgroundColor: c }}
+                >
+                  {active && (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M5 12l5 5 9-11" stroke={c === "#ffffff" ? "#0b0f14" : "#fff"} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 

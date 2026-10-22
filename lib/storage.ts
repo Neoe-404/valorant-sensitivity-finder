@@ -13,6 +13,9 @@ const KEYS = {
   lastSession: "vsf:lastSession:v1",
 } as const;
 
+/** 历史记录最多保留条数（与 UI 展示上限一致）。 */
+const HISTORY_LIMIT = 50;
+
 // 仅供当前浏览器页面导航使用；不在 SSR 上缓存用户数据。
 let pendingSession: SessionSnapshot | null = null;
 
@@ -25,13 +28,21 @@ function safeGet(key: string): string | null {
   }
 }
 
-function safeSet(key: string, value: string): boolean {
+/** 写入结果：ok 成功；disabled 存储被禁用/不可用；quota 空间不足（可通过删旧记录恢复）。 */
+type SetOutcome = "ok" | "disabled" | "quota";
+
+function isQuotaError(e: unknown): boolean {
+  const name = e instanceof Error ? e.name : "";
+  return name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED";
+}
+
+function safeSet(key: string, value: string): SetOutcome {
   try {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined") return "disabled";
     window.localStorage.setItem(key, value);
-    return true;
-  } catch {
-    return false;
+    return "ok";
+  } catch (e) {
+    return isQuotaError(e) ? "quota" : "disabled";
   }
 }
 
@@ -48,7 +59,7 @@ function parse(raw: string | null): unknown {
 
 export function saveSettings(settings: PlayerSettings): boolean {
   const valid = parsePlayerSettings(settings);
-  return valid !== null && safeSet(KEYS.settings, JSON.stringify(valid));
+  return valid !== null && safeSet(KEYS.settings, JSON.stringify(valid)) === "ok";
 }
 
 export function loadSettings(): PlayerSettings | null {
@@ -63,15 +74,30 @@ export function loadHistory(): HistoryRecord[] {
 }
 
 export function saveHistory(records: HistoryRecord[]): boolean {
-  return records.every(isHistoryRecord) && safeSet(KEYS.history, JSON.stringify(records));
+  return records.every(isHistoryRecord) && safeSet(KEYS.history, JSON.stringify(records)) === "ok";
+}
+
+/**
+ * 写入历史记录。空间不足时丢弃最旧的记录后重试，
+ * 直到写成功或仅剩新记录为止（保证本次结果尽量留存，牺牲旧历史）。
+ */
+function writeHistory(records: HistoryRecord[]): boolean {
+  if (!records.every(isHistoryRecord)) return false;
+  let outcome = safeSet(KEYS.history, JSON.stringify(records));
+  let trimmed = records;
+  while (outcome === "quota" && trimmed.length > 1) {
+    trimmed = trimmed.slice(0, trimmed.length - 1);
+    outcome = safeSet(KEYS.history, JSON.stringify(trimmed));
+  }
+  return outcome === "ok";
 }
 
 export function addHistoryRecord(record: HistoryRecord): HistoryRecord[] | null {
-  const list = loadHistory();
-  // 去重（同 id 覆盖）
-  const filtered = list.filter((r) => r.id !== record.id);
-  const next = [record, ...filtered].slice(0, 50);
-  return saveHistory(next) ? next : null;
+  if (!isHistoryRecord(record)) return null;
+  // 写前重新读取已存历史并合并，尽量缓解多标签页并发写入时的后写覆盖。
+  const existing = loadHistory();
+  const next = [record, ...existing.filter((r) => r.id !== record.id)].slice(0, HISTORY_LIMIT);
+  return writeHistory(next) ? next : null;
 }
 
 export function deleteHistoryRecord(id: string): HistoryRecord[] | null {
@@ -95,7 +121,7 @@ export function getHistoryRecord(id: string): HistoryRecord | null {
 export function saveLastSession(snapshot: SessionSnapshot): boolean {
   if (typeof window === "undefined" || !isSessionSnapshot(snapshot)) return false;
   // 即使容量不足，也保留刚完成的结果用于展示和导出。
-  const saved = safeSet(KEYS.lastSession, JSON.stringify(snapshot));
+  const saved = safeSet(KEYS.lastSession, JSON.stringify(snapshot)) === "ok";
   pendingSession = saved ? null : snapshot;
   return saved;
 }

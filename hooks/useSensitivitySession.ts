@@ -36,6 +36,8 @@ export interface SessionFlow {
   finishCalibration: (cal: CalibrationResult) => void;
   finalSnapshot: SessionSnapshot | null;
   finalHistory: HistoryRecord | null;
+  /** 结果是否成功落库（历史 + 最近会话）。null 表示尚未结束。 */
+  storageSaved: boolean | null;
   error: string | null;
 }
 
@@ -75,6 +77,7 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
   }, [state]);
 
   const [final, setFinal] = useState<{ snapshot: SessionSnapshot; history: HistoryRecord } | null>(null);
+  const [storageSaved, setStorageSaved] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const finishCalibration = useCallback(
@@ -145,7 +148,7 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
         analysis,
         calibration: calBrief,
       };
-      saveLastSession(snapshot);
+      const lastSessionSaved = saveLastSession(snapshot);
 
       const record: HistoryRecord = {
         id: snapshot.id,
@@ -165,7 +168,8 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
         rounds: search.currentRound,
         snapshot,
       };
-      addHistoryRecord(record);
+      const historySaved = addHistoryRecord(record) !== null;
+      setStorageSaved(historySaved && lastSessionSaved);
       setFinal({ snapshot, history: record });
     },
     [settings.baseSensitivity, settings.dpi, settings.mode]
@@ -240,6 +244,7 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
     finishCalibration,
     finalSnapshot: final?.snapshot ?? null,
     finalHistory: final?.history ?? null,
+    storageSaved,
     error,
   };
 }
