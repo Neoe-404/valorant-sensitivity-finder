@@ -82,14 +82,6 @@ export interface TrackingSample {
   cursorY: number;
   targetX: number;
   targetY: number;
-  /** 准星与目标中心距离（px） */
-  error: number;
-  /** 是否位于目标半径之内 */
-  inside: boolean;
-  /** 准星速度 px/s */
-  cursorSpeed: number;
-  /** 目标速度 px/s */
-  targetSpeed: number;
 }
 
 export interface TrackingScoreBreakdown {
@@ -108,9 +100,9 @@ export interface TrackingResult {
   medianError: number;
   p95Error: number;
   errorStd: number;
-  /** 准星在目标内的采样占比 0~1 */
+  /** 准星在目标范围内的时间占比 0~1（旧续测使用帧占比）。 */
   coverage: number;
-  /** 平均速度匹配误差（相对目标速度的比率均值） */
+  /** 相对目标速度的平均运动差，按时间计分时含方向。 */
   velocityDiffRatio: number;
   /** 抖动：误差变化速度 px/s（p75） */
   jitter: number;

@@ -1,242 +1,119 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SensitivitySearch } from "@/lib/sensitivity-engine";
+import { TestRun, type SceneResult, type TestPositionProgress } from "@/lib/test-run";
 import { buildAimProfile, buildAnalysis } from "@/lib/analysis-engine";
-import { addHistoryRecord, makeId, saveLastSession } from "@/lib/storage";
-import { virtualSensitivityScale } from "@/lib/mouse-math";
-import type {
-  CalibrationResult,
-  FlickResult,
-  MicroResult,
-  SessionSnapshot,
-  TrackingResult,
-  HistoryRecord,
-} from "@/types";
-import type { PlayerSettings } from "@/types";
+import { historyRecordFromSnapshot } from "@/lib/result-record";
+import { addHistoryRecord, clearTestProgress, getHistoryRecord, makeId, saveLastSession, saveTestProgress } from "@/lib/storage";
+import type { CalibrationResult, HistoryRecord, PlayerSettings, SessionSnapshot } from "@/types";
 
-export type FlowStage = "calibration" | "testing" | "finalizing" | "error";
+type SessionFlowState =
+  | ({ stage: "testing" } & TestPositionProgress)
+  | { stage: "calibration" | "finalizing" | "error" | "conflict" };
 
-export interface SessionFlowState {
-  stage: FlowStage;
-  round: number;
-  /** 本轮候选列表 */
-  roundCandidates: number[];
-  candidateIndex: number;
-  /** 当前候选灵敏度 */
-  currentSensitivity: number;
-  multiplier: number;
-  /** 0=Flick 1=Tracking 2=Micro */
-  testIndex: number;
+function stateFor(run: TestRun): SessionFlowState {
+  const position = run.position;
+  return position ? { stage: "testing", ...position } : { stage: "finalizing" };
 }
 
-export interface SessionFlow {
-  state: SessionFlowState;
-  recordTestResult: (result: FlickResult | TrackingResult | MicroResult) => void;
-  finishCalibration: (cal: CalibrationResult) => void;
-  finalSnapshot: SessionSnapshot | null;
-  finalHistory: HistoryRecord | null;
-  /** 结果是否成功落库（历史 + 最近会话）。null 表示尚未结束。 */
-  storageSaved: boolean | null;
-  error: string | null;
-}
-
-/**
- * 灵敏度测试会话管理：
- * 负责候选顺序推进、三项测试结果聚合、引擎更新与最终快照落库。
- * 引擎操作/落库都在事件回调中执行，不在 render 与 setState 更新器中执行副作用。
- */
-export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
-  const engineRef = useRef<SensitivitySearch | null>(null);
-  const pendingRef = useRef<{ flick: FlickResult | null; tracking: TrackingResult | null; micro: MicroResult | null }>({
-    flick: null,
-    tracking: null,
-    micro: null,
-  });
-  const calRef = useRef<CalibrationResult | null>(null);
-
-  /** 每 count 倍率；画布再按当前视口宽度调整。 */
-  const scaleOf = useCallback(
-    (sens: number) => virtualSensitivityScale(sens, settings.dpi, settings.screenWidth),
-    [settings.dpi, settings.screenWidth]
-  );
-
-  const [state, setState] = useState<SessionFlowState>({
-    stage: "calibration",
-    round: 0,
-    roundCandidates: [],
-    candidateIndex: 0,
-    currentSensitivity: settings.baseSensitivity,
-    multiplier: 1,
-    testIndex: 0,
-  });
-  const stateRef = useRef(state);
-  // 渲染期不写 ref；effect 中同步最新状态，事件回调内仍可读到最新值
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
+export function useSensitivitySession(settings: PlayerSettings, initialRun: TestRun | null = null) {
+  const runRef = useRef(initialRun);
+  const storedProgressRef = useRef(initialRun?.progress ?? null);
+  const settledRef = useRef(false);
+  const [state, setState] = useState<SessionFlowState>(initialRun ? stateFor(initialRun) : { stage: "calibration" });
   const [final, setFinal] = useState<{ snapshot: SessionSnapshot; history: HistoryRecord } | null>(null);
   const [storageSaved, setStorageSaved] = useState<boolean | null>(null);
+  const [progressSaved, setProgressSaved] = useState<boolean | null>(initialRun ? true : null);
   const [error, setError] = useState<string | null>(null);
 
-  const finishCalibration = useCallback(
-    (cal: CalibrationResult) => {
-      calRef.current = cal;
-      const engine = new SensitivitySearch(settings.baseSensitivity, settings.dpi, settings.mode);
-      engineRef.current = engine;
-      const first = engine.initialCandidates();
-      setState((prev) => ({
-        ...prev,
-        stage: "testing",
-        round: 1,
-        roundCandidates: first,
-        candidateIndex: 0,
-        currentSensitivity: first[0],
-        multiplier: scaleOf(first[0]),
-        testIndex: 0,
-      }));
-    },
-    [settings.baseSensitivity, settings.dpi, settings.mode, scaleOf]
-  );
+  const showSavedResult = useCallback((record: HistoryRecord) => {
+    setStorageSaved(true);
+    setFinal({ snapshot: record.snapshot, history: record });
+    setState({ stage: "finalizing" });
+  }, []);
 
-  const finalize = useCallback(
-    (search: SensitivitySearch) => {
-      const best = search.bestCandidate();
-      if (!best) return;
-      let recommendation;
-      try {
-        recommendation = search.recommend();
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "无法生成推荐，请重新测试。");
-        setState((prev) => ({ ...prev, stage: "error" }));
-        return;
-      }
-      const calBrief = calRef.current
-        ? {
-            avgMoveSpeed: calRef.current.avgMoveSpeed,
-            avgClickDelay: calRef.current.avgClickDelay,
-            hitRate: calRef.current.hitRate,
-            clicks: calRef.current.clicks,
-          }
-        : null;
-      const profile = buildAimProfile({
-        baseSensitivity: settings.baseSensitivity,
-        best,
-        rounds: search.currentRound,
-        calibration: calBrief,
-      });
-      const analysis = buildAnalysis({
-        baseSensitivity: settings.baseSensitivity,
-        best,
-        rounds: search.currentRound,
-        calibration: calBrief,
-      });
+  const persistProgress = useCallback((run: TestRun) => {
+    const progress = run.progress;
+    const outcome = saveTestProgress(progress, storedProgressRef.current);
+    if (outcome === "conflict") {
+      settledRef.current = true;
+      const completed = getHistoryRecord(progress.id);
+      if (completed) showSavedResult(completed);
+      else setState({ stage: "conflict" });
+      return false;
+    }
+    if (outcome === "saved") storedProgressRef.current = progress;
+    setProgressSaved(outcome === "saved");
+    return true;
+  }, [showSavedResult]);
 
-      const snapshot: SessionSnapshot = {
-        id: makeId(),
-        createdAt: Date.now(),
-        settings: {
-          dpi: settings.dpi,
-          baseSensitivity: settings.baseSensitivity,
-          mode: settings.mode,
-        },
-        rounds: search.currentRound,
-        candidates: search.candidates,
-        recommendation,
-        profile,
-        analysis,
-        calibration: calBrief,
-      };
-      const lastSessionSaved = saveLastSession(snapshot);
+  const finalize = useCallback((run: TestRun) => {
+    if (settledRef.current) return;
+    settledRef.current = true;
 
-      const record: HistoryRecord = {
-        id: snapshot.id,
-        date: new Date().toISOString(),
-        dpi: settings.dpi,
-        baseSensitivity: settings.baseSensitivity,
-        recommendedSensitivity: recommendation.sensitivity,
-        rangeMin: recommendation.rangeMin,
-        rangeMax: recommendation.rangeMax,
-        eDpi: recommendation.eDpi,
-        flick: Math.round(best.flickScore ?? 0),
-        tracking: Math.round(best.trackingScore ?? 0),
-        micro: Math.round(best.microScore ?? 0),
-        overall: Math.round(best.overallScore ?? 0),
-        confidence: recommendation.confidence,
-        confidenceLabel: recommendation.confidenceLabel,
-        rounds: search.currentRound,
-        snapshot,
-      };
-      const historySaved = addHistoryRecord(record) !== null;
-      setStorageSaved(historySaved && lastSessionSaved);
-      setFinal({ snapshot, history: record });
-    },
-    [settings.baseSensitivity, settings.dpi, settings.mode]
-  );
+    const { search, progress: { id, settings, calibration } } = run;
+    const stored = storedProgressRef.current;
+    const existing = getHistoryRecord(id);
+    if (existing) {
+      if (stored) clearTestProgress(stored);
+      showSavedResult(existing);
+      return;
+    }
 
-  const recordTestResult = useCallback(
-    (result: FlickResult | TrackingResult | MicroResult) => {
-      const search = engineRef.current;
-      if (!search) return;
-      const pending = pendingRef.current;
-      const s = stateRef.current; // render 时同步更新，事件回调内读取最新状态
-      if (s.stage !== "testing") return;
+    const best = search.bestCandidate();
+    let recommendation;
+    try {
+      if (!best) throw new Error("有效测试成绩不足，无法生成推荐。请重新完成测试。");
+      recommendation = search.recommend();
+    } catch (cause) {
+      if (stored) clearTestProgress(stored);
+      setError(cause instanceof Error ? cause.message : "无法生成推荐，请重新测试。");
+      setState({ stage: "error" });
+      return;
+    }
 
-      if (s.testIndex === 0 && "avgReactionTime" in result) pending.flick = result;
-      else if (s.testIndex === 1 && "sampleCount" in result) pending.tracking = result;
-      else if (s.testIndex === 2 && "avgHoldError" in result) pending.micro = result;
-      else return;
+    const rounds = search.currentRound;
+    const input = { baseSensitivity: settings.baseSensitivity, best, rounds, calibration };
+    const snapshot: SessionSnapshot = {
+      id,
+      createdAt: Date.now(),
+      settings: { dpi: settings.dpi, baseSensitivity: settings.baseSensitivity, mode: settings.mode },
+      rounds,
+      candidates: search.candidates,
+      recommendation,
+      profile: buildAimProfile(input),
+      analysis: buildAnalysis(input, recommendation.sensitivity),
+      calibration,
+    };
+    const record = historyRecordFromSnapshot(snapshot, best);
 
-      // 三项齐全 → 聚合为候选成绩（副作用放事件回调，避免 StrictMode 双调用 updater）
-      if (pending.flick && pending.tracking && pending.micro) {
-        search.completeCandidate(s.currentSensitivity, {
-          flick: pending.flick,
-          tracking: pending.tracking,
-          micro: pending.micro,
-        });
-        pendingRef.current = { flick: null, tracking: null, micro: null };
-      }
+    saveLastSession(snapshot);
+    const historySaved = addHistoryRecord(record) !== null;
+    // 保留完整进度，直到结果真正进入历史。
+    if (historySaved && stored) clearTestProgress(stored);
+    setStorageSaved(historySaved);
+    setFinal({ snapshot, history: record });
+  }, [showSavedResult]);
 
-      if (s.stage !== "testing") return;
-      // 候选内推进到下一个测试
-      if (s.testIndex < 2) {
-        setState((prev) => ({ ...prev, testIndex: ((prev.testIndex + 1) % 3) as 0 | 1 | 2 }));
-        return;
-      }
-      // 当前候选三个测试都完成 → 下一个候选
-      const nextIndex = s.candidateIndex + 1;
-      if (nextIndex < s.roundCandidates.length) {
-        const sens = s.roundCandidates[nextIndex];
-        setState({
-          ...s,
-          candidateIndex: nextIndex,
-          testIndex: 0,
-          currentSensitivity: sens,
-          multiplier: scaleOf(sens),
-        });
-        return;
-      }
-      // 本轮全部完成 → 下一轮或结束（finalize 在事件回调内执行）
-      const next = search.nextRound();
-      if (!next) {
-        setState({ ...s, stage: "finalizing" as FlowStage });
-        finalize(search);
-        return;
-      }
-      const sens = next[0];
-      setState({
-        ...s,
-        round: search.currentRound,
-        roundCandidates: next,
-        candidateIndex: 0,
-        testIndex: 0,
-        currentSensitivity: sens,
-        multiplier: scaleOf(sens),
-      });
-    },
-    [finalize, scaleOf]
-  );
+  // 如果最后一项已完成但结果未能落盘，可以直接重试保存。
+  useEffect(() => {
+    if (initialRun && !initialRun.position && !settledRef.current && persistProgress(initialRun)) finalize(initialRun);
+  }, [initialRun, finalize, persistProgress]);
+
+  const finishCalibration = useCallback((cal: CalibrationResult) => {
+    if (runRef.current || settledRef.current) return;
+    const { avgMoveSpeed, avgClickDelay, hitRate, clicks } = cal;
+    const run = new TestRun(makeId(), settings, { avgMoveSpeed, avgClickDelay, hitRate, clicks });
+    runRef.current = run;
+    if (persistProgress(run)) setState(stateFor(run));
+  }, [persistProgress, settings]);
+
+  const recordTestResult = useCallback((result: SceneResult) => {
+    const run = runRef.current;
+    if (settledRef.current || !run || !run.recordResult(result) || !persistProgress(run)) return;
+    setState(stateFor(run));
+    if (!run.position) finalize(run);
+  }, [persistProgress, finalize]);
 
   return {
     state,
@@ -245,6 +122,7 @@ export function useSensitivitySession(settings: PlayerSettings): SessionFlow {
     finalSnapshot: final?.snapshot ?? null,
     finalHistory: final?.history ?? null,
     storageSaved,
+    progressSaved,
     error,
   };
 }

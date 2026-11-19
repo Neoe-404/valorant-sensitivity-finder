@@ -14,8 +14,8 @@ export interface PlayerSettings {
 }
 
 export const TEST_MODES: { value: TestMode; label: string; desc: string }[] = [
-  { value: "quick", label: "快速模式", desc: "约 8～12 分钟，3 轮候选" },
-  { value: "standard", label: "标准模式", desc: "约 15～20 分钟，4 轮候选，结果更稳定" },
+  { value: "quick", label: "快速模式", desc: "约 8～12 分钟，最多 3 轮" },
+  { value: "standard", label: "标准模式", desc: "约 15～20 分钟，最多 4 轮" },
 ];
 
 export const DEFAULT_SETTINGS: PlayerSettings = {

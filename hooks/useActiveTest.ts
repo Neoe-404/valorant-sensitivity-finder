@@ -12,17 +12,17 @@ import { useAim, type ActiveTestApi } from "@/components/aim/AimArena";
 export function useActiveTest(api: ActiveTestApi): void {
   const { registerActive } = useAim();
   const apiRef = useRef(api);
-  // 回调闭包每帧可能变化（引用最新），但注册只发生一次
+  const acceptsClicks = api.onPointerDown !== undefined;
   apiRef.current = api;
 
   useEffect(() => {
     registerActive({
       onFrame: (f, scene) => apiRef.current.onFrame(f, scene),
-      onPointerDown: (x, y, scene) => apiRef.current.onPointerDown(x, y, scene),
+      onPointerDown: acceptsClicks ? (x, y, scene) => apiRef.current.onPointerDown?.(x, y, scene) : undefined,
       onReset: () => apiRef.current.onReset?.(),
     });
     return () => {
       registerActive(null);
     };
-  }, [registerActive]);
+  }, [acceptsClicks, registerActive]);
 }

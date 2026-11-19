@@ -4,17 +4,20 @@
  * 第一版用于本地；键名前缀预留未来迁移 Supabase 时使用同一数据模型。
  */
 
-import type { HistoryRecord, PlayerSettings, SessionSnapshot } from "@/types";
-import { isHistoryRecord, isSessionSnapshot, parsePlayerSettings } from "./validation";
+import type { HistoryRecord, PlayerSettings, SessionSnapshot, TestProgress } from "@/types";
+import { isHistoryRecord, isSessionSnapshot, parsePlayerSettings, parseResultExport, parseTestProgress } from "./validation";
+import { bestMeasuredCandidate, historyRecordFromSnapshot } from "./result-record";
 
 const KEYS = {
   settings: "vsf:settings:v1",
   history: "vsf:history:v1",
   lastSession: "vsf:lastSession:v1",
+  testProgress: "vsf:testProgress:v1",
 } as const;
 
 /** 历史记录最多保留条数（与 UI 展示上限一致）。 */
 const HISTORY_LIMIT = 50;
+export const MAX_RESULT_FILE_BYTES = 256 * 1024;
 
 // 仅供当前浏览器页面导航使用；不在 SSR 上缓存用户数据。
 let pendingSession: SessionSnapshot | null = null;
@@ -68,9 +71,13 @@ export function loadSettings(): PlayerSettings | null {
 
 /* ---------- History ---------- */
 
-export function loadHistory(): HistoryRecord[] {
-  const list = parse(safeGet(KEYS.history));
+function parseHistory(raw: string | null): HistoryRecord[] {
+  const list = parse(raw);
   return Array.isArray(list) ? list.filter(isHistoryRecord) : [];
+}
+
+export function loadHistory(): HistoryRecord[] {
+  return parseHistory(safeGet(KEYS.history));
 }
 
 export function saveHistory(records: HistoryRecord[]): boolean {
@@ -116,6 +123,36 @@ export function getHistoryRecord(id: string): HistoryRecord | null {
   return loadHistory().find((r) => r.id === id) ?? null;
 }
 
+type ResultImportOutcome =
+  | { status: "imported" | "duplicate"; id: string }
+  | { status: "invalid" | "too-large" | "active-test" | "full" | "unavailable" };
+
+export function importResult(json: string): ResultImportOutcome {
+  if (json.length > MAX_RESULT_FILE_BYTES) return { status: "too-large" };
+  const snapshot = parseResultExport(json);
+  const best = snapshot && bestMeasuredCandidate(snapshot.candidates);
+  if (!snapshot || !best) return { status: "invalid" };
+  if (typeof window === "undefined") return { status: "unavailable" };
+
+  const { id } = snapshot;
+  try {
+    const history = parseHistory(window.localStorage.getItem(KEYS.history));
+    if (history.some((record) => record.id === id)) return { status: "duplicate", id };
+    const progress = readTestProgress();
+    if (progress === undefined) return { status: "unavailable" };
+    if (progress?.id === id) return { status: "active-test" };
+    if (history.length >= HISTORY_LIMIT) return { status: "full" };
+
+    // 导入只追加记录，不为释放空间删除现有历史。
+    const record = historyRecordFromSnapshot(snapshot, best);
+    const saved = safeSet(KEYS.history, JSON.stringify([record, ...history]));
+    if (saved === "ok") return { status: "imported", id };
+    return { status: saved === "quota" ? "full" : "unavailable" };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
 /* ---------- Last session（测试完成时写入，结果页兜底读取） ---------- */
 
 export function saveLastSession(snapshot: SessionSnapshot): boolean {
@@ -128,7 +165,10 @@ export function saveLastSession(snapshot: SessionSnapshot): boolean {
 
 export function loadLastSession(): SessionSnapshot | null {
   if (typeof window === "undefined") return null;
-  if (pendingSession) return pendingSession;
+  return pendingSession ?? readSavedLastSession();
+}
+
+function readSavedLastSession(): SessionSnapshot | null {
   const value = parse(safeGet(KEYS.lastSession));
   return isSessionSnapshot(value) ? value : null;
 }
@@ -151,6 +191,52 @@ export function getSessionForResults(id: string | null): SessionSnapshot | null 
   if (history) return history.snapshot;
   const last = loadLastSession();
   return last?.id === id ? last : null;
+}
+
+/* ---------- 未完成测试 ---------- */
+
+function readTestProgress(): TestProgress | null | undefined {
+  try {
+    if (typeof window === "undefined") return undefined;
+    return parseTestProgress(parse(window.localStorage.getItem(KEYS.testProgress)));
+  } catch {
+    return undefined;
+  }
+}
+
+function sameTestProgress(current: TestProgress | null, expected: TestProgress): boolean {
+  return current?.id === expected.id && JSON.stringify(current) === JSON.stringify(parseTestProgress(expected));
+}
+
+export function loadTestProgress(): TestProgress | null {
+  const progress = readTestProgress();
+  return progress && !getHistoryRecord(progress.id) ? progress : null;
+}
+
+export function saveTestProgress(
+  progress: TestProgress,
+  previous: TestProgress | null,
+): "saved" | "unavailable" | "conflict" {
+  const valid = parseTestProgress(progress);
+  if (!valid) return "unavailable";
+  const current = readTestProgress();
+  if (current === undefined) return "unavailable";
+  if (previous ? !sameTestProgress(current, previous) : current && !getHistoryRecord(current.id)) {
+    return "conflict";
+  }
+  return safeSet(KEYS.testProgress, JSON.stringify(valid)) === "ok" ? "saved" : "unavailable";
+}
+
+export function clearTestProgress(expected: TestProgress): boolean {
+  const current = readTestProgress();
+  if (current === null) return true;
+  if (current === undefined || !sameTestProgress(current, expected)) return false;
+  try {
+    window.localStorage.removeItem(KEYS.testProgress);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** localStorage 功能是否可用 */

@@ -260,7 +260,7 @@ export default function SetupPage() {
 
         <button type="submit" className="btn-primary w-full text-base">
           <Send size={16} />
-          进入测试（先校准）
+          进入测试
         </button>
       </form>
     </main>

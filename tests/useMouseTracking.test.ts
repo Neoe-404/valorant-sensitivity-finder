@@ -54,10 +54,16 @@ describe("useMouseTracking", () => {
     expect(flush()).toEqual({ dx: 7, dy: 4 });
   });
 
-  it("falls back to movementX/Y when the coalesced sum is all zeros", () => {
+  it("falls back to movementX/Y when coalesced entries report no deltas", () => {
     const { handleMove, flush } = useMouseTracking();
     handleMove(makeEvent(9, 8, [{ movementX: 0, movementY: 0 }]));
     expect(flush()).toEqual({ dx: 9, dy: 8 });
+  });
+
+  it("preserves zero net displacement when coalesced movements cancel out", () => {
+    const { handleMove, flush } = useMouseTracking();
+    handleMove(makeEvent(9, 8, [{ movementX: 3, movementY: 2 }, { movementX: -3, movementY: -2 }]));
+    expect(flush()).toEqual({ dx: 0, dy: 0 });
   });
 
   it("falls back when getCoalescedEvents throws", () => {

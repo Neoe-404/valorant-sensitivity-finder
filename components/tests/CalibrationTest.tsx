@@ -117,7 +117,7 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     if (hit) s.hits++;
     s.clickDelays.push(now - s.spawnTime);
     s.reachDistances.push(dist(s.startX, s.startY, s.targetPos.x, s.targetPos.y));
-    s.completedDistance += s.moveDist;
+    s.completedDistance += s.moveDist + dist(s.prevX, s.prevY, x, y);
     s.moveDist = 0;
     s.target = null;
     s.targetPos = null;

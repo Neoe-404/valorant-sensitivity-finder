@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeFlickScore } from "@/lib/scoring";
+import { matchedSpawnPoint, type ScenePlan } from "@/lib/test-plan";
 import { FLICK_RADIUS, configFor, dist, randomSpawnPoint } from "./shared";
 import { useActiveTest } from "@/hooks/useActiveTest";
 import type { FlickResult, FlickTargetRecord, TestMode } from "@/types";
@@ -10,6 +11,7 @@ import type { SceneTarget } from "@/components/aim/Target";
 
 interface FlickTestProps {
   mode: TestMode;
+  plan?: ScenePlan;
   onComplete: (result: FlickResult) => void;
 }
 
@@ -18,13 +20,11 @@ interface FlickState {
   total: number;
   target: SceneTarget | null;
   rec: FlickTargetRecord | null;
-  path: { x: number; y: number }[];
   records: FlickTargetRecord[];
   elapsedMs: number;
   finished: boolean;
   idCounter: number;
   // 每目标临时量
-  moveDist: number;
   prevX: number;
   prevY: number;
   lastVx: number;
@@ -39,7 +39,7 @@ interface FlickState {
  * Flick Test：20 个随机目标，记录每个目标的
  * 起点/命中点/路径/总距离/理想距离/反应/修正/过冲/欠冲。
  */
-export function FlickTest({ mode, onComplete }: FlickTestProps) {
+export function FlickTest({ mode, onComplete, plan }: FlickTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
@@ -50,12 +50,10 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     total: cfg.flickTargets,
     target: null,
     rec: null,
-    path: [],
     records: [],
     elapsedMs: 0,
     finished: false,
     idCounter: 1,
-    moveDist: 0,
     prevX: 0,
     prevY: 0,
     lastVx: 0,
@@ -68,7 +66,10 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
 
   const spawnTarget = (f: FrameData, scene: Scene) => {
     const cur = aim.getCursor();
-    const pos = randomSpawnPoint({
+    const pos = plan ? matchedSpawnPoint({
+      w: f.w, h: f.h, fromX: cur.x, fromY: cur.y,
+      targetRadius: FLICK_RADIUS, targetIndex: s.records.length, kind: "flick", plan,
+    }) : randomSpawnPoint({
       w: f.w,
       h: f.h,
       fromX: cur.x,
@@ -105,8 +106,6 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
       reactionTime: 0,
       timeToTarget: 0,
     };
-    s.moveDist = 0;
-    s.path = [];
     s.prevX = cur.x;
     s.prevY = cur.y;
     s.lastVx = 0;
@@ -118,42 +117,29 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     scene.targets = [target];
   };
 
-  const onFrame = (f: FrameData, scene: Scene) => {
-    if (s.finished) return;
-    s.elapsedMs += f.dt;
-    if (!s.target) {
-      spawnTarget(f, scene);
-      return;
-    }
-    const rec = s.rec!;
-    const t = s.target;
-
-    // 路径采样
-    const seg = dist(s.prevX, s.prevY, f.x, f.y);
-    s.moveDist += seg;
-    if (s.path.length < 400) s.path.push({ x: f.x, y: f.y });
+  const sampleMovement = (x: number, y: number, now: number, target: SceneTarget, rec: FlickTargetRecord) => {
+    const vx = x - s.prevX;
+    const vy = y - s.prevY;
+    const spd = Math.hypot(vx, vy);
+    rec.totalMouseDistance += spd;
+    rec.pathSampleCount++;
 
     // 反应时间：累计位移超过 12px 视为“开始移动”
-    if (!rec.firstMoveTime && s.moveDist > 12) {
-      rec.firstMoveTime = f.now;
+    if (!rec.firstMoveTime && rec.totalMouseDistance > 12) {
+      rec.firstMoveTime = Math.max(now, rec.spawnTime);
     }
-
-    // 速度 / 方向
-    const vx = f.x - s.prevX;
-    const vy = f.y - s.prevY;
-    const spd = Math.hypot(vx, vy);
 
     // 修正计数：明显反向
     if (spd > 5 && s.lastSpd > 5 && vx * s.lastVx + vy * s.lastVy < -spd * s.lastSpd * 0.4) {
       rec.correctionCount++;
     }
 
-    const dToT = dist(f.x, f.y, t.x, t.y);
+    const dToT = dist(x, y, target.x, target.y);
 
     // 欠冲：明显停滞在目标半径之外 (>120ms)，之后需要再次移动
-    if (spd < 0.05 && dToT > t.r * 1.4) {
-      if (!s.stallStart) s.stallStart = f.now;
-      if (f.now - s.stallStart > 120 && s.moveDist > rec.idealDistance * 0.35 && !rec.undershoot) {
+    if (spd < 0.05 && dToT > target.r * 1.4) {
+      if (!s.stallStart) s.stallStart = now;
+      if (now - s.stallStart > 120 && rec.totalMouseDistance > rec.idealDistance * 0.35 && !rec.undershoot) {
         rec.undershoot = true;
         rec.correctionCount++;
       }
@@ -162,17 +148,27 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     }
 
     // 过冲：进入目标半径后再次大幅远离
-    if (dToT <= t.r) s.entered = true;
-    if (s.entered && dToT > t.r * 1.6) {
+    if (dToT <= target.r) s.entered = true;
+    if (s.entered && dToT > target.r * 1.6) {
       rec.overshoot = true;
-      rec.overshootDistance = Math.max(rec.overshootDistance, dToT - t.r);
+      rec.overshootDistance = Math.max(rec.overshootDistance, dToT - target.r);
     }
 
-    s.prevX = f.x;
-    s.prevY = f.y;
+    s.prevX = x;
+    s.prevY = y;
     s.lastVx = vx;
     s.lastVy = vy;
     s.lastSpd = spd;
+  };
+
+  const onFrame = (f: FrameData, scene: Scene) => {
+    if (s.finished) return;
+    s.elapsedMs += f.dt;
+    if (!s.target || !s.rec) {
+      spawnTarget(f, scene);
+      return;
+    }
+    sampleMovement(f.x, f.y, f.now, s.target, s.rec);
 
     scene.trail.push({ x: f.x, y: f.y, t: f.now });
     if (scene.trail.length > 100) scene.trail.splice(0, scene.trail.length - 100);
@@ -186,19 +182,18 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
   const onPointerDown = (x: number, y: number, scene: Scene) => {
     const rec = s.rec;
     if (s.finished || !rec || !s.target) return;
-    const d = dist(x, y, s.target.x, s.target.y);
-    rec.hit = d <= s.target.r;
-    rec.hitTime = performance.now();
+    const now = performance.now();
+    if (x !== s.prevX || y !== s.prevY) sampleMovement(x, y, now, s.target, rec);
+    rec.hit = dist(x, y, s.target.x, s.target.y) <= s.target.r;
+    rec.hitTime = now;
     rec.hitX = x;
     rec.hitY = y;
-    rec.pathSampleCount = s.path.length;
-    rec.totalMouseDistance = s.moveDist;
     rec.reactionTime = rec.firstMoveTime ? rec.firstMoveTime - rec.spawnTime : 0;
     rec.timeToTarget = rec.hitTime - rec.spawnTime;
     rec.correctionCount = Math.min(8, rec.correctionCount);
     // 命中/未命中视觉反馈：在点击处画一个短暂淡出的标记
     if (!scene.hitMarks) scene.hitMarks = [];
-    scene.hitMarks.push({ x, y, t: performance.now(), hit: rec.hit });
+    scene.hitMarks.push({ x, y, t: now, hit: rec.hit });
     s.records.push({ ...rec });
     s.target = null;
     s.rec = null;
@@ -219,7 +214,6 @@ export function FlickTest({ mode, onComplete }: FlickTestProps) {
     // 暂停恢复：丢弃当前目标的未完成数据，重新生成
     s.target = null;
     s.rec = null;
-    s.moveDist = 0;
     s.stallStart = 0;
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };

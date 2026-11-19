@@ -5,10 +5,9 @@
  *
  * 1. 第 1 轮生成 3 个候选：[base×0.8, base, base×1.2]（步长 20%）。
  * 2. 每个候选完成 Flick + Tracking + Micro 三项测试后，得到 overallScore。
- * 3. 一轮结束：以 top-3 候选的分数平方加权平均作为下一轮中心（保留探索，
- *    不会因为单次失误立即淘汰某个方向）。
- * 4. 每轮步长递减：[20%, 12%, 8%, 5%, 3%]。
- * 5. 收敛条件：新中心与上轮中心变化 < 1% base，或达到最大轮数。
+ * 3. 一轮结束：以前三名候选（含并列）的分数平方加权平均作为下一轮中心。
+ * 4. 逐步缩小搜索范围。已测灵敏度沿用原成绩，某一步没有新值就尝试下一步。
+ * 5. 收敛条件：新中心与上轮中心变化 < 1% base，或用完当前模式的搜索步长。
  * 6. 最终推荐：取 bestScore×0.92 以上的候选池，按分数加权求推荐值，
  *    区间 = 候选池 sens 范围夹紧推荐值 ± 最新步长（有最小半宽，单一候选池
  *    保持对称区间）；置信度由区间宽度、top 差距、候选池大小和完成轮数
@@ -16,14 +15,21 @@
  */
 
 import { clamp } from "./statistics";
+import { bestMeasuredCandidate } from "./result-record";
 import { clampSensitivity, roundSensitivity, sensitivityMultiplier } from "./mouse-math";
 import {
   computeOverallScore,
   computePenalties,
   consistencyFor,
 } from "./scoring";
-import type { FlickResult, MicroResult, TrackingResult } from "@/types";
-import type { CandidateScore, ConfidenceLabel, SensitivityRecommendation } from "@/types";
+import type {
+  CandidateScore,
+  ConfidenceLabel,
+  FlickMeasurement,
+  MicroMeasurement,
+  SensitivityRecommendation,
+  TrackingMeasurement,
+} from "@/types";
 
 /** 各轮步长（相对中心的比例） */
 export const ROUND_STEPS = [0.2, 0.12, 0.08, 0.05, 0.03];
@@ -41,9 +47,9 @@ const NARROW_RANGE_PENALTY = 20;
 const SINGLE_BASIS_PENALTY = 30;
 
 interface CompletedTests {
-  flick: FlickResult;
-  tracking: TrackingResult;
-  micro: MicroResult;
+  flick: FlickMeasurement;
+  tracking: TrackingMeasurement;
+  micro: MicroMeasurement;
 }
 
 export class SensitivitySearch {
@@ -53,6 +59,7 @@ export class SensitivitySearch {
   candidates: CandidateScore[] = [];
   currentRound = 0;
   previousCenter: number | null = null;
+  private currentStep = 1;
   private done = false;
 
   constructor(base: number, dpi: number, mode: "quick" | "standard") {
@@ -64,26 +71,22 @@ export class SensitivitySearch {
   /** 第 1 轮的候选（本轮入口） */
   initialCandidates(): number[] {
     this.currentRound = 1;
-    return this.roundCandidates(this.base);
+    this.currentStep = 1;
+    return this.roundCandidates(this.base, this.currentStep);
   }
 
-  /** 某轮的中心 ± step 生成 3 个候选 */
-  private roundCandidates(center: number): number[] {
-    const step = this.stepFor(this.currentRound);
+  /** 按游戏精度取整，再排除同轮重复值和已完成的候选。 */
+  private roundCandidates(center: number, stepNumber: number): number[] {
+    const step = this.stepFor(stepNumber);
     const candidates = [
-      roundSensitivity(center * (1 - step)),
-      roundSensitivity(center),
-      roundSensitivity(center * (1 + step)),
-    ];
-    // 去重 + 限定范围
-    const unique: number[] = [];
-    for (const c of candidates) {
-      const clamped = clampSensitivity(c);
-      if (unique.length === 0 || Math.abs(unique[unique.length - 1] - clamped) > 0.0005) {
-        unique.push(clamped);
-      }
-    }
-    return unique;
+      center * (1 - step),
+      center,
+      center * (1 + step),
+    ].map((sens) => roundSensitivity(clampSensitivity(sens)));
+    const measured = new Set(
+      this.candidates.filter((card) => card.finished).map((card) => card.sensitivity)
+    );
+    return [...new Set(candidates)].filter((sens) => !measured.has(sens));
   }
 
   stepFor(round: number): number {
@@ -93,12 +96,9 @@ export class SensitivitySearch {
 
   /** 生成下一轮候选（未被测试的），返回 null 表示结束 */
   nextRound(): number[] | null {
-    if (this.done) return null;
+    if (this.done || !this.bestCandidate()) return null;
 
-    const best = this.bestCandidate();
-    if (!best || !best.finished) return null;
-
-    if (this.currentRound >= this.maxRounds) {
+    if (this.currentStep >= this.maxRounds) {
       this.done = true;
       return null;
     }
@@ -110,17 +110,27 @@ export class SensitivitySearch {
       return null;
     }
 
-    this.previousCenter = center;
-    this.currentRound += 1;
-    return this.roundCandidates(center);
+    // 没有新候选的步长不占用一轮，也不参与推荐区间的计算。
+    for (let step = this.currentStep + 1; step <= this.maxRounds; step++) {
+      const candidates = this.roundCandidates(center, step);
+      if (candidates.length === 0) continue;
+      this.previousCenter = center;
+      this.currentStep = step;
+      this.currentRound += 1;
+      return candidates;
+    }
+
+    this.done = true;
+    return null;
   }
 
-  /** 加权中心：按分数的平方给 top-3 加权，让最优候选占主导（仍保留探索） */
+  /** 分数平方加权。第三名并列时纳入同分候选，避免按测试顺序取舍。 */
   private weightedCenter(): number {
     const finished = this.candidates.filter((c) => c.finished && c.overallScore !== null);
     if (finished.length === 0) return this.base;
     const sorted = [...finished].sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
-    const top = sorted.slice(0, 3);
+    const cutoff = sorted[2]?.overallScore ?? 0;
+    const top = sorted.filter((card) => (card.overallScore ?? 0) >= cutoff);
     if (top.length === 1) return top[0].sensitivity;
     const totalWeight = top.reduce((s, c) => s + (c.overallScore ?? 0) * (c.overallScore ?? 0), 0);
     if (totalWeight <= 0) return top[0].sensitivity;
@@ -130,13 +140,15 @@ export class SensitivitySearch {
   }
 
   bestCandidate(): CandidateScore | null {
-    const finished = this.candidates.filter((c) => c.finished && c.overallScore !== null);
-    if (finished.length === 0) return null;
-    return [...finished].sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
+    return bestMeasuredCandidate(this.candidates);
   }
 
   /** 候选完成三项测试后调用 */
   completeCandidate(sensitivity: number, tests: CompletedTests): CandidateScore {
+    const rounded = roundSensitivity(clampSensitivity(sensitivity));
+    const existing = this.candidates.find((card) => card.sensitivity === rounded);
+    if (existing) return existing;
+
     const flickScore = tests.flick.score;
     const trackingScore = tests.tracking.score;
     const microScore = tests.micro.score;
@@ -149,14 +161,11 @@ export class SensitivitySearch {
     const consistency = consistencyFor(flickScore, trackingScore, microScore);
     const overall = computeOverallScore({ flickScore, trackingScore, microScore, penalties });
 
-    const existing = this.candidates.find(
-      (c) => Math.abs(c.sensitivity - sensitivity) < 0.0005
-    );
     const card: CandidateScore = {
-      sensitivity: roundSensitivity(sensitivity),
-      multiplier: sensitivityMultiplier(sensitivity, this.base),
+      sensitivity: rounded,
+      multiplier: sensitivityMultiplier(rounded, this.base),
       round: this.currentRound,
-      orderInRound: existing ? existing.orderInRound : this.candidates.length,
+      orderInRound: this.candidates.filter((candidate) => candidate.round === this.currentRound).length,
       testsCompleted: 3,
       flickScore,
       trackingScore,
@@ -177,12 +186,7 @@ export class SensitivitySearch {
     // 置信度在全部候选完成后统一重算（见 recomputeConfidence），
     // 避免"完成得早的候选"在后来者加入后仍保留陈旧值。
 
-    if (existing) {
-      const idx = this.candidates.indexOf(existing);
-      this.candidates[idx] = card;
-    } else {
-      this.candidates.push(card);
-    }
+    this.candidates.push(card);
     return card;
   }
 
@@ -236,7 +240,7 @@ export class SensitivitySearch {
     const recommended =
       sensValues.reduce((s, v, i) => s + v * (weights[i] / totalWeight), 0);
 
-    const step = this.stepFor(this.currentRound);
+    const step = this.stepFor(this.currentStep);
     const poolMin = Math.min(...sensValues);
     const poolMax = Math.max(...sensValues);
     // 区间 = 推荐值 ± max(最新步长, 最小半宽)；候选池 ≥2 时才夹紧到池范围，

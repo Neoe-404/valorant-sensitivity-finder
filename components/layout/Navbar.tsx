@@ -12,7 +12,7 @@ const LINKS = [
 ];
 
 export function Navbar() {
-  const pathname = usePathname();
+  const pathname = usePathname().replace(/\/+$/, "") || "/";
   if (pathname === "/test") return null; // 测试全屏
 
   return (

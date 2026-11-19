@@ -121,13 +121,42 @@ describe("search update", () => {
     // 三人都基本一样好，中心就是 base 本身 → 第二轮中心 ≈ base → 收敛
     completeRound(search, r1, () => 85);
     let cands: number[] | null = search.nextRound();
-    expect(cands).not.toBeNull(); // 第一轮结束允许继续（previousCenter 为 null）
+    expect(cands).toEqual([0.308, 0.392]);
     if (!cands) return;
     completeRound(search, cands, () => 86);
     // 触发收敛判定
     cands = search.nextRound();
     expect(cands).toBeNull();
     expect(search.isDone()).toBe(true);
+  });
+
+  it("keeps the first completed score if a rounded sensitivity is submitted again", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    completeRound(search, search.initialCandidates(), () => 85);
+    const center = search.candidates.find((card) => card.sensitivity === 0.35)!;
+    const next = search.nextRound();
+    expect(next).toEqual([0.308, 0.392]);
+
+    completeRound(search, [0.3501], () => 30);
+    completeRound(search, next!, () => 86);
+    expect(search.candidates.find((card) => card.sensitivity === 0.35)).toEqual(center);
+    expect(search.candidates.map((card) => card.orderInRound)).toEqual([0, 1, 2, 0, 1]);
+  });
+
+  it.each([
+    { mode: "quick", next: null, rounds: 2 },
+    { mode: "standard", next: [0.051, 0.056], rounds: 3 },
+  ] as const)("skips an entirely tested range in $mode mode", ({ mode, next, rounds }) => {
+    const search = new SensitivitySearch(0.053, 800, mode);
+    completeRound(search, search.initialCandidates(), (s) => s === 0.05 ? 80 : 20);
+    const second = search.nextRound();
+    expect(second).toEqual([0.052, 0.058]);
+    completeRound(search, second!, () => 80);
+
+    // The 8% step proposes 0.050 / 0.053 / 0.058, all measured. Only standard has a finer step left.
+    expect(search.nextRound()).toEqual(next);
+    expect(search.currentRound).toBe(rounds);
+    expect(search.isDone()).toBe(next === null);
   });
 });
 

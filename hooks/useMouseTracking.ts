@@ -22,11 +22,15 @@ export function useMouseTracking() {
         if (coalesced && coalesced.length > 0) {
           let sx = 0;
           let sy = 0;
+          let hasMovement = false;
           for (const c of coalesced) {
-            sx += c.movementX || 0;
-            sy += c.movementY || 0;
+            const x = c.movementX || 0;
+            const y = c.movementY || 0;
+            sx += x;
+            sy += y;
+            hasMovement ||= x !== 0 || y !== 0;
           }
-          if (sx !== 0 || sy !== 0) {
+          if (hasMovement) {
             dx = sx;
             dy = sy;
           }

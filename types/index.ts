@@ -13,8 +13,14 @@ export type {
   CalibrationResult,
 } from "./aim";
 export type {
+  CalibrationSummary,
   CandidateScore,
   CandidateMetrics,
+  FlickMeasurement,
+  MicroMeasurement,
+  TrackingMeasurement,
+  RecordedTest,
+  TestProgress,
   SensitivityRecommendation,
   ConfidenceLabel,
   SessionSnapshot,

@@ -138,9 +138,66 @@ describe("scoring: flick", () => {
 });
 
 describe("scoring: tracking", () => {
-  function circleSamples(radius: number, err: number, count: number): TrackingSample[] {
+  function linearTrack(times: number[], cursorSpeed = 140): TrackingSample[] {
+    return times.map((t) => ({ t, cursorX: t * cursorSpeed / 1000, cursorY: 0, targetX: t * 0.1, targetY: 0 }));
+  }
+
+  it("uses time rather than frame count for the same motion at different sampling rates", () => {
+    const uniform = Array.from({ length: 51 }, (_, i) => i * 20);
+    const uneven = [
+      ...Array.from({ length: 101 }, (_, i) => i * 5),
+      ...Array.from({ length: 25 }, (_, i) => 520 + i * 20),
+    ];
+    const steady = computeTrackingScore({ samples: linearTrack(uniform), targetRadius: 26, seed: 1 });
+    const varied = computeTrackingScore({ samples: linearTrack(uneven), targetRadius: 26, seed: 1 });
+    expect(varied.sampleCount).toBe(126);
+    expect(varied.durationMs).toBe(1000);
+    expect(varied.avgError).toBeCloseTo(20, 6);
+    expect(varied.medianError).toBeCloseTo(20, 6);
+    expect(varied.p95Error).toBeCloseTo(38, 6);
+    expect(varied.errorStd).toBeCloseTo(40 / Math.sqrt(12), 6);
+    expect(varied.coverage).toBeCloseTo(0.65, 6);
+    expect(varied.velocityDiffRatio).toBeCloseTo(0.4, 6);
+    expect(varied.jitter).toBeCloseTo(40, 6);
+    expect(varied.score).toBeCloseTo(steady.score, 6);
+  });
+
+  it("gives no velocity matching credit for moving at the same speed in the opposite direction", () => {
+    const samples = linearTrack([0, 20, 40], -100);
+    const result = computeTrackingScore({ samples, targetRadius: 26, seed: 1 });
+    expect(result.velocityDiffRatio).toBeCloseTo(2, 6);
+    expect(result.breakdown.velocityMatching).toBe(0);
+  });
+
+  it("gives no score when there is no measured interval", () => {
+    const result = computeTrackingScore({ samples: linearTrack([20, 20]), targetRadius: 26, seed: 1 });
+    expect(result.sampleCount).toBe(2);
+    expect(result.durationMs).toBe(0);
+    expect(result.score).toBe(0);
+  });
+
+  it("does not overweight a short burst of jitter with densely sampled frames", () => {
+    const times = [
+      ...Array.from({ length: 41 }, (_, i) => i * 5),
+      ...Array.from({ length: 20 }, (_, i) => 240 + i * 40),
+    ];
+    const samples = times.map((t) => ({ t, cursorX: Math.min(t, 200) * 0.1, cursorY: 0, targetX: 0, targetY: 0 }));
+    const result = computeTrackingScore({ samples, targetRadius: 26, seed: 1 });
+    expect(result.jitter).toBe(0);
+    expect(result.breakdown.noise).toBe(100);
+    expect(result.avgError).toBeCloseTo(18, 6);
+  });
+
+  it("preserves frame counting and speed matching for a session using old scores", () => {
+    const samples = linearTrack([0, 150, 300], -100);
+    const legacy = computeTrackingScore({ samples, targetRadius: 26, seed: 1, method: "frames" });
+    expect(legacy.coverage).toBe(1 / 3);
+    expect(legacy.avgError).toBe(30);
+    expect(legacy.breakdown.velocityMatching).toBe(100);
+  });
+
+  function circleSamples(err: number, count: number): TrackingSample[] {
     const out: TrackingSample[] = [];
-    const t0 = Date.now();
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const tx = 500 + Math.cos(angle) * 200;
@@ -149,23 +206,19 @@ describe("scoring: tracking", () => {
       const cx = tx + err;
       const cy = ty;
       out.push({
-        t: t0 + i * 16.7,
+        t: i * 16.7,
         cursorX: cx,
         cursorY: cy,
         targetX: tx,
         targetY: ty,
-        error: Math.hypot(cx - tx, cy - ty),
-        inside: Math.hypot(cx - tx, cy - ty) <= radius,
-        cursorSpeed: 0,
-        targetSpeed: 0,
       });
     }
     return out;
   }
 
   it("small error beats large error", () => {
-    const good = computeTrackingScore({ samples: circleSamples(26, 5, 300), targetRadius: 26, seed: 1 });
-    const bad = computeTrackingScore({ samples: circleSamples(26, 60, 300), targetRadius: 26, seed: 2 });
+    const good = computeTrackingScore({ samples: circleSamples(5, 300), targetRadius: 26, seed: 1 });
+    const bad = computeTrackingScore({ samples: circleSamples(60, 300), targetRadius: 26, seed: 2 });
     expect(good.score).toBeGreaterThan(85);
     expect(bad.score).toBeLessThan(40);
     expect(good.avgError).toBeLessThan(bad.avgError);

@@ -1,16 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SensitivityRecommendation } from "@/types";
-import { ShieldCheck, Activity, Copy, Check } from "lucide-react";
+import { Copy, Check } from "lucide-react";
 import { cmPer360 } from "@/lib/mouse-math";
 
 interface SensitivityResultProps {
   rec: SensitivityRecommendation;
+  wasTested: boolean;
 }
 
-export function SensitivityResult({ rec }: SensitivityResultProps) {
-  const [copied, setCopied] = useState(false);
+export function SensitivityResult({ rec, wasTested }: SensitivityResultProps) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "manual">("idle");
+  const valueRef = useRef<HTMLSpanElement>(null);
+  const value = rec.sensitivity.toFixed(3);
+  const copied = copyStatus === "copied";
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopyStatus("idle"), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   const labelColor =
     rec.confidenceLabel === "High"
       ? "text-good border-good/40 bg-good/10"
@@ -19,26 +30,31 @@ export function SensitivityResult({ rec }: SensitivityResultProps) {
         : "text-accent border-accent/40 bg-accent/10";
 
   const copy = async () => {
-    const value = rec.sensitivity.toFixed(3);
+    const valueNode = valueRef.current;
+    if (!valueNode || copyStatus === "copying") return;
+    setCopyStatus("copying");
+
+    let success = false;
     try {
       await navigator.clipboard.writeText(value);
+      success = true;
     } catch {
-      // 非安全上下文或权限被拒时回退到隐藏文本域 + execCommand
-      const ta = document.createElement("textarea");
-      ta.value = value;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand("copy");
-      } catch {
-        /* 忽略：仍会在 UI 上显示反馈 */
+      if (!valueNode.isConnected) return;
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(valueNode);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        try {
+          success = document.execCommand("copy");
+        } catch {
+          success = false;
+        }
+        if (success) selection.removeAllRanges();
       }
-      document.body.removeChild(ta);
     }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    if (valueNode.isConnected) setCopyStatus(success ? "copied" : "manual");
   };
 
   return (
@@ -46,21 +62,24 @@ export function SensitivityResult({ rec }: SensitivityResultProps) {
       <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-accent via-accent/60 to-transparent" />
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div>
-          <div className="text-[11px] uppercase tracking-[0.2em] text-dim">Your Sensitivity</div>
+          <div className="text-xs tracking-widest text-dim">推荐灵敏度</div>
           <div className="mt-2 flex items-center gap-3">
-            <div className="font-mono text-5xl font-bold text-fg sm:text-6xl">
-              {rec.sensitivity.toFixed(3)}
-            </div>
+            <span ref={valueRef} className="select-text font-mono text-5xl font-bold text-fg sm:text-6xl">
+              {value}
+            </span>
             <button
               type="button"
               onClick={copy}
-              aria-label={copied ? "已复制" : "复制灵敏度"}
-              title={copied ? "已复制" : "复制灵敏度"}
+              aria-label="复制灵敏度"
+              title="复制灵敏度"
               className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-line text-dim transition hover:border-accent hover:text-accent"
             >
               {copied ? <Check size={18} className="text-good" /> : <Copy size={18} />}
             </button>
           </div>
+          <p role="status" className={copyStatus === "manual" ? "mt-2 text-xs text-warn" : "sr-only"}>
+            {copied ? "已复制灵敏度。" : copyStatus === "manual" ? "自动复制失败，请手动复制上方数值。" : ""}
+          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-dim">
             <span className="rounded border border-line bg-panel-2 px-2 py-1 font-mono">
               DPI {rec.dpi}
@@ -78,8 +97,8 @@ export function SensitivityResult({ rec }: SensitivityResultProps) {
           <span className={`rounded-full border px-3 py-1 text-xs font-semibold ${labelColor}`}>
             置信指标 · {rec.confidenceLabel} ({rec.confidence}%)
           </span>
-          <div className="text-right">
-            <div className="text-[11px] uppercase tracking-widest text-dim">Recommended Range</div>
+          <div className="sm:text-right">
+            <div className="text-xs tracking-widest text-dim">推荐区间</div>
             <div className="mt-1 font-mono text-lg text-fg">
               {rec.rangeMin.toFixed(3)} ~ {rec.rangeMax.toFixed(3)}
             </div>
@@ -88,15 +107,10 @@ export function SensitivityResult({ rec }: SensitivityResultProps) {
       </div>
 
       <div className="mt-6 flex flex-col gap-2 border-t border-line pt-4 text-xs text-dim">
-        <div className="flex items-center gap-2">
-          <ShieldCheck size={14} className="text-accent" />
-          <span>推荐值由 {rec.basisCount} 个候选灵敏度按实际成绩加权计算</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Activity size={14} className="text-accent" />
-          <span>{rec.reason}</span>
-        </div>
-        <p>置信指标为经验估计，不代表统计置信概率；请在游戏内复核手感。</p>
+        <p>根据 {rec.basisCount} 个实测候选的综合分计算。{wasTested ? "推荐值有对应实测成绩。" : "推荐值尚未单独实测，可在游戏内试用。"}{" "}
+          <a href="#candidate-scores" className="text-accent underline underline-offset-4">查看候选成绩</a>
+        </p>
+        <p>置信指标为经验估计，供试用时参考。</p>
       </div>
     </div>
   );

@@ -4,9 +4,12 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
-import { getHistoryRecord, getSessionForResults } from "@/lib/storage";
+import { getHistoryRecord, getSessionForResults, loadTestProgress } from "@/lib/storage";
+import { analyzeResult } from "@/lib/analysis-engine";
+import { roundSensitivity } from "@/lib/mouse-math";
 import { SensitivityResult } from "@/components/results/SensitivityResult";
 import { ScoreCard } from "@/components/results/ScoreCard";
+import { ExportResultButton } from "@/components/results/ExportResultButton";
 import { Crosshair, TrendingUp, AlertTriangle, CheckCircle2, Info, History } from "lucide-react";
 import type { SessionSnapshot } from "@/types";
 
@@ -38,12 +41,15 @@ function ResultsContent() {
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
   const [phase, setPhase] = useState<"loading" | "ready" | "empty">("loading");
   const [unsaved, setUnsaved] = useState(false);
+  const [hasProgress, setHasProgress] = useState(false);
 
   useEffect(() => {
     const id = searchParams.get("id");
     const snap = getSessionForResults(id);
+    const missingHistory = Boolean(snap && !getHistoryRecord(snap.id));
     setSnapshot(snap);
-    setUnsaved(Boolean(snap && !getHistoryRecord(snap.id)));
+    setUnsaved(missingHistory);
+    setHasProgress(missingHistory && loadTestProgress()?.id === snap?.id);
     setPhase(snap ? "ready" : "empty");
   }, [searchParams]);
 
@@ -66,18 +72,13 @@ function ResultsContent() {
     );
   }
 
-  const { recommendation: rec, profile, analysis, candidates, calibration, settings } = snapshot;
-  const exportResult = () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `sensitivity-result-${snapshot.id}.json`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-  const best = [...candidates]
-    .filter((c) => c.finished && c.overallScore !== null)
-    .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))[0];
+  const { recommendation: rec, profile, candidates, calibration, settings } = snapshot;
+  const { best, analysis } = analyzeResult(snapshot);
+  const recommendationTested = candidates.some((c) =>
+    c.finished && c.overallScore !== null && c.sensitivity === rec.sensitivity
+  );
+  const baseline = roundSensitivity(settings.baseSensitivity);
+  const basis = new Set(rec.basis);
 
   // 未完成的候选分数显示为「—」，避免与真实 0 分混淆
   const scoreCell = (v: number | null) =>
@@ -88,33 +89,38 @@ function ResultsContent() {
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight">测试结果</h1>
-        <p className="mt-2 text-sm text-dim">
-          {settings.baseSensitivity.toFixed(3)} → {rec.sensitivity.toFixed(3)} ·
-          经过 {snapshot.rounds} 轮搜索、{candidates.length} 个候选灵敏度
-        </p>
+      <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">测试结果</h1>
+          <p className="mt-2 text-sm text-dim">
+            {settings.baseSensitivity.toFixed(3)} → {rec.sensitivity.toFixed(3)} ·
+            经过 {snapshot.rounds} 轮搜索、{candidates.length} 个候选灵敏度
+          </p>
+        </div>
+        <ExportResultButton key={snapshot.id} snapshot={{ ...snapshot, analysis }} />
       </header>
 
       {/* 推荐 */}
       {unsaved ? (
         <div role="alert" className="panel mb-6 border-warn/50 p-4 text-sm text-warn">
-          本次结果未保存到历史。请导出结果后再刷新或关闭页面。
-          <button className="btn-ghost ml-3" onClick={exportResult}>导出结果</button>
+          <p>本次结果未保存到历史。{hasProgress ? "可以返回测试页查看已保存的进度。" : "请导出结果后再刷新或关闭页面。"}</p>
+          {hasProgress ? <Link href="/test" className="btn-ghost mt-3">查看已保存进度</Link> : null}
         </div>
       ) : null}
-      <SensitivityResult rec={rec} />
+      <SensitivityResult key={snapshot.id} rec={rec} wasTested={recommendationTested} />
 
       {/* 成绩卡 */}
       <section className="mt-8">
-        <h2 className="mb-4 text-lg font-semibold">最佳候选成绩</h2>
+        <h2 className="mb-4 text-lg font-semibold">
+          {best ? `实测最高分 · 灵敏度 ${best.sensitivity.toFixed(3)}` : "实测成绩"}
+        </h2>
         {best ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-            <ScoreCard label="Flick" value={Math.round(best.flickScore ?? 0)} tone="accent" />
-            <ScoreCard label="Tracking" value={Math.round(best.trackingScore ?? 0)} tone="accent" />
-            <ScoreCard label="Micro" value={Math.round(best.microScore ?? 0)} tone="accent" />
-            <ScoreCard label="Consistency" value={Math.round(best.consistencyScore ?? 0)} tone="warn" />
-            <ScoreCard label="Overall" value={Math.round(best.overallScore ?? 0)} tone="good" />
+            <ScoreCard label="甩枪" value={Math.round(best.flickScore ?? 0)} tone="accent" />
+            <ScoreCard label="跟枪" value={Math.round(best.trackingScore ?? 0)} tone="accent" />
+            <ScoreCard label="微调" value={Math.round(best.microScore ?? 0)} tone="accent" />
+            <ScoreCard label="一致性" value={Math.round(best.consistencyScore ?? 0)} tone="warn" />
+            <ScoreCard label="综合" value={Math.round(best.overallScore ?? 0)} tone="good" />
           </div>
         ) : (
           <div className="panel p-6 text-center text-sm text-dim">
@@ -129,13 +135,13 @@ function ResultsContent() {
       {/* 画像 + 分析 */}
       <section className="mt-8 grid gap-4 lg:grid-cols-2">
         <div className="panel p-6">
-          <h2 className="mb-2 text-lg font-semibold">Aim Profile</h2>
-          <p className="mb-4 text-xs text-dim">六维瞄准画像（0~100）</p>
+          <h2 className="mb-2 text-lg font-semibold">瞄准画像</h2>
+          <p className="mb-4 text-xs text-dim">六维瞄准画像（0~100）{best ? `，基于灵敏度 ${best.sensitivity.toFixed(3)} 的实测成绩` : ""}</p>
           <AimProfileChart profile={profile} />
         </div>
 
         <div className="panel p-6">
-          <h2 className="mb-4 text-lg font-semibold">灵敏度问题分析</h2>
+          <h2 className="mb-4 text-lg font-semibold">表现分析</h2>
           <div className="space-y-3">
             {analysis.map((a, i) => (
               <div key={i} className="flex gap-3 rounded-lg border border-line bg-panel-2 p-3">
@@ -161,30 +167,41 @@ function ResultsContent() {
       ) : null}
 
       {/* 候选表 */}
-      <section className="mt-8">
-        <div className="panel overflow-x-auto">
+      <section id="candidate-scores" className="mt-8 scroll-mt-20" aria-labelledby="candidate-scores-title">
+        <h2 id="candidate-scores-title" className="mb-4 text-lg font-semibold">候选成绩</h2>
+        <div className="panel overflow-x-auto" tabIndex={0} role="region" aria-labelledby="candidate-scores-title">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="border-b border-line text-[11px] uppercase tracking-wider text-dim">
-                <th className="px-4 py-3">Round</th>
-                <th className="px-4 py-3">Sensitivity</th>
-                <th className="px-4 py-3">×Multiplier</th>
-                <th className="px-4 py-3">Flick</th>
-                <th className="px-4 py-3">Tracking</th>
-                <th className="px-4 py-3">Micro</th>
-                <th className="px-4 py-3">Overall</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">轮次</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">灵敏度</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">倍率</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">甩枪</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">跟枪</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">微调</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">综合</th>
+                <th scope="col" className="px-4 py-3 whitespace-nowrap">备注</th>
               </tr>
             </thead>
             <tbody>
               {candidates.map((c) => (
                 <tr key={`${c.round}-${c.sensitivity}`} className="border-b border-line/50 font-mono text-xs">
                   <td className="px-4 py-2.5 text-dim">{c.round}</td>
-                  <td className="px-4 py-2.5 text-fg">{c.sensitivity.toFixed(3)}</td>
+                  <th scope="row" className="px-4 py-2.5 font-medium text-fg">{c.sensitivity.toFixed(3)}</th>
                   <td className="px-4 py-2.5 text-dim">×{c.multiplier.toFixed(2)}</td>
                   <td className="px-4 py-2.5">{scoreCell(c.flickScore)}</td>
                   <td className="px-4 py-2.5">{scoreCell(c.trackingScore)}</td>
                   <td className="px-4 py-2.5">{scoreCell(c.microScore)}</td>
                   <td className="px-4 py-2.5 font-bold text-good">{scoreCell(c.overallScore)}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex flex-wrap gap-1 whitespace-nowrap font-sans">
+                      {c === best ? <span className="rounded bg-good/10 px-1.5 py-0.5 text-good">最高分</span> : null}
+                      {c.sensitivity === baseline ? <span className="rounded bg-panel-2 px-1.5 py-0.5 text-dim">当前设置</span> : null}
+                      {c.finished && c.overallScore !== null && basis.has(c.sensitivity) ? (
+                        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent">计入推荐</span>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

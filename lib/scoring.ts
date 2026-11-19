@@ -16,12 +16,11 @@
 import {
   mean,
   median,
-  standardDeviation,
   clamp,
   cv,
-  percentile,
   consistencyAcross,
 } from "./statistics";
+import { trackingMetrics, type TrackingScoringMethod } from "./tracking-metrics";
 import type {
   FlickResult,
   FlickTargetRecord,
@@ -120,40 +119,14 @@ export interface TrackingScoringInput {
   samples: TrackingSample[];
   targetRadius: number;
   seed: number;
+  method?: TrackingScoringMethod;
 }
 
 export function computeTrackingScore(input: TrackingScoringInput): TrackingResult {
   const { samples, targetRadius } = input;
-  const n = samples.length;
-  if (n === 0) {
-    return emptyTracking(input);
-  }
-
-  const errors = samples.map((s) => s.error);
-  const avgError = mean(errors);
-  const medianError = median(errors);
-  const p95Error = percentile(errors, 95);
-  const errorStd = standardDeviation(errors);
-  const coverage = samples.filter((s) => s.inside).length / n;
-
-  // 速度匹配：|cursorSpeed - targetSpeed| / max(targetSpeed, 8)
-  let velSum = 0;
-  let velCount = 0;
-  for (const s of samples) {
-    const denom = Math.max(s.targetSpeed, 8);
-    velSum += Math.abs(s.cursorSpeed - s.targetSpeed) / denom;
-    velCount++;
-  }
-  const velocityDiffRatio = velCount === 0 ? 0 : velSum / velCount;
-
-  // 抖动：误差随时间的变化速度 px/s（取 p75，避免个别帧干扰）
-  const jitterDeltas: number[] = [];
-  for (let i = 1; i < n; i++) {
-    const dt = (samples[i].t - samples[i - 1].t) / 1000;
-    if (dt <= 0) continue;
-    jitterDeltas.push(Math.abs(samples[i].error - samples[i - 1].error) / dt);
-  }
-  const jitter = percentile(jitterDeltas, 75);
+  const metrics = trackingMetrics(samples, targetRadius, input.method ?? "time");
+  if (!metrics) return emptyTracking(input);
+  const { avgError, medianError, errorStd, coverage, velocityDiffRatio, jitter } = metrics;
 
   // --- 分项 ---
   // 平均误差：0 → 100 分，1.6×radius → 0 分（线性）
@@ -179,15 +152,8 @@ export function computeTrackingScore(input: TrackingScoringInput): TrackingResul
   );
 
   return {
-    durationMs: n > 0 ? samples[n - 1].t - samples[0].t : 0,
-    sampleCount: n,
-    avgError,
-    medianError,
-    p95Error,
-    errorStd,
-    coverage,
-    velocityDiffRatio,
-    jitter,
+    ...metrics,
+    sampleCount: samples.length,
     score,
     breakdown: {
       error: errorScore,
@@ -205,7 +171,7 @@ export function computeTrackingScore(input: TrackingScoringInput): TrackingResul
 function emptyTracking(input: TrackingScoringInput): TrackingResult {
   return {
     durationMs: 0,
-    sampleCount: 0,
+    sampleCount: input.samples.length,
     avgError: 0,
     medianError: 0,
     p95Error: 0,

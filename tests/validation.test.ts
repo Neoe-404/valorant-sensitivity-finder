@@ -6,6 +6,7 @@ import {
   validateSettingsInput,
   isSessionSnapshot,
   isHistoryRecord,
+  parseResultExport,
 } from "../lib/validation";
 
 describe("parsePlayerSettings", () => {
@@ -162,6 +163,30 @@ const validHistory: HistoryRecord = {
   rounds: 2,
   snapshot: validSnapshot,
 };
+
+describe("parseResultExport", () => {
+  const snapshot: SessionSnapshot = {
+    ...validSnapshot,
+    recommendation: { ...validSnapshot.recommendation, sensitivity: 0.28, eDpi: 224, basis: [0.28], basisCount: 1 },
+  };
+
+  it("accepts an exported result including a UTF-8 byte order mark", () => {
+    expect(parseResultExport("\uFEFF" + JSON.stringify(snapshot))).toEqual(snapshot);
+  });
+
+  it("rejects invalid identifiers, unrepresentable dates and tampered recommendations", () => {
+    const invalid = [
+      { ...snapshot, id: "snap?id=another" },
+      { ...snapshot, createdAt: 8640000000000001 },
+      { ...snapshot, recommendation: { ...snapshot.recommendation, confidenceLabel: { toString: "High" } } },
+      { ...snapshot, recommendation: { ...snapshot.recommendation, eDpi: 123 } },
+      { ...snapshot, recommendation: { ...snapshot.recommendation, basis: [0.35] } },
+      { ...snapshot, candidates: [{ ...snapshot.candidates[0], flickScore: null }] },
+    ];
+    for (const value of invalid) expect(parseResultExport(JSON.stringify(value))).toBeNull();
+    expect(parseResultExport('{"truncated"')).toBeNull();
+  });
+});
 
 describe("isSessionSnapshot", () => {
   it("accepts a well-formed snapshot", () => {

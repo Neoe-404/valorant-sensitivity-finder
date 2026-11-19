@@ -4,7 +4,8 @@
  */
 
 import { clamp } from "./statistics";
-import type { AimProfile, AnalysisItem, CandidateScore } from "@/types";
+import { bestMeasuredCandidate } from "./result-record";
+import type { AimProfile, AnalysisItem, CandidateScore, SessionSnapshot } from "@/types";
 
 export interface AnalysisInput {
   baseSensitivity: number;
@@ -15,6 +16,36 @@ export interface AnalysisInput {
 
 const OVERSHOOT_THRESHOLD = 0.3;
 const UNDERSHOOT_THRESHOLD = 0.3;
+
+function recommendationDirection(base: number, recommended: number): AnalysisItem {
+  const change = (recommended - base) / base;
+  const value = recommended.toFixed(3);
+  if (Math.abs(change) < 0.03) {
+    return {
+      severity: "info",
+      title: "推荐值接近当前灵敏度",
+      text: `可先在游戏内试用 ${value}，与当前的 ${base.toFixed(3)} 比较手感。`,
+    };
+  }
+  const direction = change > 0 ? "提高" : "降低";
+  return {
+    severity: "info",
+    title: `建议${direction}灵敏度`,
+    text: `推荐先试用 ${value}，比当前的 ${base.toFixed(3)} ${direction}约 ${Math.round(Math.abs(change) * 100)}%。`,
+  };
+}
+
+/** 从保存的成绩和推荐值生成当前解读，也适用于较早的记录。 */
+export function analyzeResult(snapshot: SessionSnapshot) {
+  const { candidates, settings, rounds, calibration, recommendation } = snapshot;
+  const best = bestMeasuredCandidate(candidates);
+  return {
+    best,
+    analysis: best
+      ? buildAnalysis({ best, baseSensitivity: settings.baseSensitivity, rounds, calibration }, recommendation.sensitivity)
+      : [recommendationDirection(settings.baseSensitivity, recommendation.sensitivity)],
+  };
+}
 
 /** 生成 0~100 瞄准画像（雷达图数据） */
 export function buildAimProfile(input: AnalysisInput): AimProfile {
@@ -53,7 +84,7 @@ export function buildAimProfile(input: AnalysisInput): AimProfile {
 }
 
 /** 根据真实数据生成规则型文字分析 */
-export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
+export function buildAnalysis(input: AnalysisInput, recommendedSensitivity: number): AnalysisItem[] {
   const { best, baseSensitivity, rounds } = input;
   const flick = best.flickScore ?? 0;
   const tracking = best.trackingScore ?? 0;
@@ -62,35 +93,7 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
   const m = best.metrics;
   const overshootRate = m?.overshootRate ?? 0;
   const undershootRate = m?.undershootRate ?? 0;
-  const items: AnalysisItem[] = [];
-
-  // 1. 方向判断：推荐值与当前灵敏度的相对关系（用最佳候选的相对位置辅助）
-  const diff = (best.sensitivity - baseSensitivity) / Math.max(0.0001, baseSensitivity);
-  if (Math.abs(diff) < 0.03) {
-    items.push({
-      severity: "info",
-      title: "当前灵敏度方向正确",
-      text: `最优候选 ${best.sensitivity.toFixed(3)} 与你现在的灵敏度（${baseSensitivity.toFixed(
-        3
-      )}）非常接近，说明你目前的方向基本正确，只需微调即可。`,
-    });
-  } else if (diff > 0) {
-    items.push({
-      severity: "info",
-      title: "建议略微提高灵敏度",
-      text: `数据显示最佳成绩出现在更高灵敏度（${best.sensitivity.toFixed(
-        3
-      )}，相对提升 ${Math.round(diff * 100)}%）下。如果向上调整后没有明显过冲，可以放心使用。`,
-    });
-  } else {
-    items.push({
-      severity: "info",
-      title: "建议略微降低灵敏度",
-      text: `数据显示最佳成绩出现在更低灵敏度（${best.sensitivity.toFixed(
-        3
-      )}，相对降低 ${Math.round(-diff * 100)}%）下，你的控制更稳定。`,
-    });
-  }
+  const items = [recommendationDirection(baseSensitivity, recommendedSensitivity)];
 
   // 2. 过冲 / 欠冲（来自真实命中记录）
   if (overshootRate > OVERSHOOT_THRESHOLD) {
@@ -99,7 +102,7 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
       title: "存在明显过冲",
       text: `你的瞄准中出现了较明显的过冲（命中前越过目标的比例 ${Math.round(
         overshootRate * 100
-      )}%）。这通常意味着当前灵敏度对你的精细控制来说偏快，可以尝试再降低 5%～8%。`,
+      )}%）。可练习在接近目标时减速。`,
     });
   }
   if (undershootRate > UNDERSHOOT_THRESHOLD) {
@@ -108,10 +111,10 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
       title: "存在明显欠冲",
       text: `你较频繁地出现未一次到位的情况（${Math.round(
         undershootRate * 100
-      )}%），到位速度偏慢。可以尝试略微提高灵敏度以缩短到位时间。`,
+      )}%）。可练习减少到位前的停顿。`,
     });
   }
-  if (overshootRate <= OVERSHOOT_THRESHOLD && undershootRate <= UNDERSHOOT_THRESHOLD) {
+  if (m && m.flickAccuracy >= 0.7 && overshootRate <= OVERSHOOT_THRESHOLD && undershootRate <= UNDERSHOOT_THRESHOLD) {
     items.push({
       severity: "good",
       title: "一次性到位能力不错",
@@ -130,7 +133,7 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
     items.push({
       severity: "warn",
       title: "微调精度待提升",
-      text: "跟枪成绩较好但微调精度偏低，说明你在小范围修正时容易抖动，可以略微降低灵敏度或练习精细控制。",
+      text: "跟枪成绩较好，微调得分偏低。可以练习小范围移动和稳定保持。",
     });
   }
 
@@ -138,8 +141,8 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
   if (consistency < 60) {
     items.push({
       severity: "warn",
-      title: "成绩波动较大",
-      text: "三项测试成绩差异较大（一致性分低），可能是状态波动或灵敏度不适配。建议保持当前区间再完成一轮测试，避免单次成绩干扰判断。",
+      title: "各项得分差异较大",
+      text: "甩枪、跟枪和微调的得分差距较大。可以在候选成绩表中对比各项表现。",
     });
   }
 
@@ -158,14 +161,6 @@ export function buildAnalysis(input: AnalysisInput): AnalysisItem[] {
       severity: "info",
       title: "快，但需要刹住车",
       text: "反应和到位很快，但刹车（防过冲）不足。练习在接近目标末端时主动降低鼠标速度。",
-    });
-  }
-
-  if (items.length === 0) {
-    items.push({
-      severity: "info",
-      title: "没有明显短板",
-      text: "当前数据未触发明显的问题规则。继续按推荐区间练习即可。",
     });
   }
 

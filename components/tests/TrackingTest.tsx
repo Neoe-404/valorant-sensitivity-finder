@@ -3,13 +3,17 @@
 import { useRef } from "react";
 import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeTrackingScore } from "@/lib/scoring";
-import { TRACKING_RADIUS, configFor, dist, mulberry32 } from "./shared";
+import type { TrackingScoringMethod } from "@/lib/tracking-metrics";
+import type { ScenePlan } from "@/lib/test-plan";
+import { TRACKING_RADIUS, configFor, mulberry32 } from "./shared";
 import { useActiveTest } from "@/hooks/useActiveTest";
 import type { TestMode, TrackingResult, TrackingSample } from "@/types";
 import type { SceneTarget } from "@/components/aim/Target";
 
 interface TrackingTestProps {
   mode: TestMode;
+  plan?: ScenePlan;
+  scoringMethod?: TrackingScoringMethod;
   onComplete: (result: TrackingResult) => void;
 }
 
@@ -37,20 +41,17 @@ interface TrackParams {
  * 目标沿“正弦叠加 + 漂移”的平滑曲线运动（速度时刻变化，但连续可预测）。
  * 逐帧记录 cursor-target 距离 / 覆盖 / 速度匹配 / 抖动。
  */
-export function TrackingTest({ mode, onComplete }: TrackingTestProps) {
+export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }: TrackingTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
   const s = useRef({
-    elapsedMs: 0,
     durationMs: cfg.trackingDurationMs,
-    seed: Math.floor(Math.random() * 1e9),
+    seed: plan?.seed ?? Math.floor(Math.random() * 1e9),
     params: null as TrackParams | null,
     samples: [] as TrackingSample[],
-    prevCursor: { x: 0, y: 0 },
-    prevTarget: { x: 0, y: 0 },
     finished: false,
   }).current;
 
@@ -96,59 +97,59 @@ export function TrackingTest({ mode, onComplete }: TrackingTestProps) {
       p.ay * Math.sin(p.v1 * t * 1.15 + p.q1) +
       p.by * Math.sin(p.v2 * t + p.q2) +
       p.ay * 0.08 * Math.cos(p.driftFreq * t * 0.8 + p.driftPhase);
-    return { x, y };
+    return {
+      x: plan && (plan.variant & 1) ? 2 * p.cx - x : x,
+      y: plan && (plan.variant & 2) ? 2 * p.cy - y : y,
+    };
   };
 
   const finish = () => {
     if (s.finished) return;
     s.finished = true;
+    const first = s.samples[0];
+    // 目标经过静止准星也可能得分。至少移动四分之一目标半径，排除静止和微小抖动。
+    const moved = first && s.samples.some((sample) =>
+      Math.hypot(sample.cursorX - first.cursorX, sample.cursorY - first.cursorY) >= TRACKING_RADIUS / 4
+    );
+    if (!moved) {
+      aim.pause("tracking-idle");
+      return;
+    }
     const result = computeTrackingScore({
       samples: s.samples,
       targetRadius: TRACKING_RADIUS,
       seed: s.seed,
+      method: scoringMethod,
     });
     onCompleteRef.current(result);
   };
 
   const onFrame = (f: FrameData, scene: Scene) => {
     if (s.finished) return;
-    // 只有实际运行的帧累计时间，就绪和暂停不消耗测试时长。
-    if (s.params) s.elapsedMs += f.dt;
-    const tSec = s.elapsedMs / 1000;
-    if (tSec >= s.durationMs / 1000) {
+    const previous = s.samples.at(-1);
+    // 第一帧只记录起点，然后按实际测量间隔推进。
+    const elapsedMs = previous ? previous.t + f.dt : 0;
+    if (scoringMethod === "frames" && elapsedMs >= s.durationMs) {
       finish();
       return;
     }
-    if (!s.params) {
-      s.params = buildParams(f);
-      s.prevCursor = { x: f.x, y: f.y };
-      s.prevTarget = targetPos(s.params, tSec);
+    const t = Math.min(elapsedMs, s.durationMs);
+    const tSec = t / 1000;
+    s.params ??= buildParams(f);
+    const tp = targetPos(s.params, tSec);
+    let cursorX = f.x;
+    let cursorY = f.y;
+    // 最后一帧可以越过时限，只计到边界。准星位置在相邻测量点之间插值。
+    if (previous && elapsedMs > t) {
+      const fraction = (t - previous.t) / f.dt;
+      cursorX = previous.cursorX + (f.x - previous.cursorX) * fraction;
+      cursorY = previous.cursorY + (f.y - previous.cursorY) * fraction;
     }
-    const p = s.params;
-    const tp = targetPos(p, tSec);
-    const error = dist(f.x, f.y, tp.x, tp.y);
-
-    const dtSec = f.dt / 1000;
-    const cursorSpeed = dtSec > 0 ? dist(s.prevCursor.x, s.prevCursor.y, f.x, f.y) / dtSec : 0;
-    const targetSpeed = dtSec > 0 ? dist(s.prevTarget.x, s.prevTarget.y, tp.x, tp.y) / dtSec : 0;
-
-    // 跳过暂停等大间隔帧，避免污染速度统计
-    if (f.dt < 300) {
-      s.samples.push({
-        t: s.elapsedMs,
-        cursorX: f.x,
-        cursorY: f.y,
-        targetX: tp.x,
-        targetY: tp.y,
-        error,
-        inside: error <= TRACKING_RADIUS,
-        cursorSpeed,
-        targetSpeed,
-      });
+    s.samples.push({ t, cursorX, cursorY, targetX: tp.x, targetY: tp.y });
+    if (t >= s.durationMs) {
+      finish();
+      return;
     }
-
-    s.prevCursor = { x: f.x, y: f.y };
-    s.prevTarget = { x: tp.x, y: tp.y };
 
     const target: SceneTarget = {
       id: 9901,
@@ -168,23 +169,17 @@ export function TrackingTest({ mode, onComplete }: TrackingTestProps) {
     };
   };
 
-  const onPointerDown = () => {
-    // Tracking 无需点击
-  };
-
   const onReset = () => {
     // 跟踪是一个连续目标；暂停后重做本段，保留同一条轨迹。
-    s.elapsedMs = 0;
     s.samples = [];
     s.params = null;
-    s.prevCursor = { x: 0, y: 0 };
-    s.prevTarget = { x: 0, y: 0 };
     s.finished = false;
     aim.sceneRef.current.targets = [];
     aim.sceneRef.current.trail = [];
+    aim.sceneRef.current.progress = undefined;
   };
 
-  useActiveTest({ onFrame, onPointerDown, onReset });
+  useActiveTest({ onFrame, onReset });
 
   return null;
 }

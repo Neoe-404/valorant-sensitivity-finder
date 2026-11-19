@@ -3,6 +3,30 @@
  */
 
 import type { AimProfile, AnalysisItem } from "./analysis";
+import type { CalibrationResult, FlickResult, MicroResult, TrackingResult } from "./aim";
+import type { PlayerSettings } from "./settings";
+
+export type CalibrationSummary = Pick<CalibrationResult, "avgMoveSpeed" | "avgClickDelay" | "hitRate" | "clicks">;
+export type FlickMeasurement = Pick<FlickResult,
+  "score" | "overshootRate" | "undershootRate" | "misses" | "attempts" | "avgCorrections" | "avgTimeToTarget" | "accuracy"
+>;
+export type TrackingMeasurement = Pick<TrackingResult, "score">;
+export type MicroMeasurement = Pick<MicroResult, "score" | "avgCorrections">;
+
+export type RecordedTest = { sensitivity: number } & (
+  | { testIndex: 0; measurement: FlickMeasurement }
+  | { testIndex: 1; measurement: TrackingMeasurement }
+  | { testIndex: 2; measurement: MicroMeasurement }
+);
+
+export interface TestProgress {
+  /** 2 起跟枪按时间计分，3 起匹配测试难度，4 起微调按时间计分。 */
+  version: 1 | 2 | 3 | 4;
+  id: string;
+  settings: PlayerSettings;
+  calibration: CalibrationSummary;
+  tests: RecordedTest[];
+}
 
 /** 从真实原始测试数据派生的关键指标（供规则分析引擎使用，非随机数） */
 export interface CandidateMetrics {
@@ -61,12 +85,7 @@ export interface SessionSnapshot {
   recommendation: SensitivityRecommendation;
   profile: AimProfile;
   analysis: AnalysisItem[];
-  calibration: {
-    avgMoveSpeed: number;
-    avgClickDelay: number;
-    hitRate: number;
-    clicks: number;
-  } | null;
+  calibration: CalibrationSummary | null;
 }
 
 /** 历史记录（History Page 展示用） */
