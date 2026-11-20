@@ -1,9 +1,11 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 interface ScoreCardProps {
   label: string;
-  value: number;
-  sub?: string;
+  value: number | string;
+  sub?: ReactNode;
   tone?: "accent" | "good" | "warn" | "default";
 }
 

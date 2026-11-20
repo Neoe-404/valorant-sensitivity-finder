@@ -9,6 +9,10 @@ export function bestMeasuredCandidate(candidates: CandidateScore[]): CandidateSc
   return best;
 }
 
+export function formatMeasuredScore(value: number): string {
+  return (Math.round(value * 10) / 10).toFixed(1);
+}
+
 export function historyRecordFromSnapshot(snapshot: SessionSnapshot, best: CandidateScore): HistoryRecord {
   const { id, createdAt, rounds, recommendation, settings } = snapshot;
   return {

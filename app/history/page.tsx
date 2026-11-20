@@ -3,15 +3,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { clearHistory, deleteHistoryRecord, importResult, loadHistory, MAX_RESULT_FILE_BYTES } from "@/lib/storage";
+import { clearHistory, deleteHistoryRecord, historyBackup, importHistoryFile, loadHistory, MAX_HISTORY_FILE_BYTES } from "@/lib/storage";
 import { analyzeResult } from "@/lib/analysis-engine";
+import { JsonDownloadButton } from "@/components/results/JsonDownloadButton";
 import { History as HistoryIcon, Trash2, ChevronRight, FlaskConical, Upload } from "lucide-react";
 import type { HistoryRecord } from "@/types";
 
 const importErrors = {
-  invalid: "无法识别此文件。请选择从结果页导出的测试 JSON。",
-  "too-large": "文件超过 256 KB，请选择一份测试结果 JSON。",
-  "active-test": "这次测试有已保存的进度。请先到测试页继续测试或重试保存。",
+  invalid: "无法识别或还原此文件。请选择结果 JSON 或历史备份。",
+  "too-large": "文件超过导入大小限制。请选择结果 JSON 或历史备份。",
+  "active-test": "文件中有当前可继续的测试。请先到测试页处理该进度。",
   full: "历史已达到记录上限，或浏览器存储空间不足。请清出空间后重试。",
   unavailable: "无法写入浏览器存储，请检查站点设置后重试。",
 };
@@ -32,7 +33,7 @@ export default function HistoryPage() {
   const [mounted, setMounted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
-  const [importNotice, setImportNotice] = useState<{ id: string; duplicate: boolean } | null>(null);
+  const [importNotice, setImportNotice] = useState<{ message: string; id?: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -72,17 +73,22 @@ export default function HistoryPage() {
   const onImport = async (file: File) => {
     setError(null);
     setImportNotice(null);
-    if (file.size > MAX_RESULT_FILE_BYTES) {
+    if (file.size > MAX_HISTORY_FILE_BYTES) {
       setError(importErrors["too-large"]);
       return;
     }
     setImporting(true);
     try {
-      const outcome = importResult(await file.text());
+      const outcome = importHistoryFile(await file.text(), file.size);
       if ("id" in outcome) {
         setRecords(loadHistory());
         setSelected(outcome.id);
-        setImportNotice({ id: outcome.id, duplicate: outcome.status === "duplicate" });
+        setImportNotice({ id: outcome.id, message: outcome.status === "duplicate" ? "这次测试已在历史中。" : "已导入测试结果。" });
+      } else if (outcome.status === "restored") {
+        setRecords(loadHistory());
+        setImportNotice({
+          message: `恢复 ${outcome.imported} 条记录${outcome.skipped ? `，跳过 ${outcome.skipped} 条重复记录` : ""}。`,
+        });
       } else {
         setError(importErrors[outcome.status]);
       }
@@ -124,12 +130,15 @@ export default function HistoryPage() {
             <Upload size={16} /> {importing ? "正在导入…" : "导入 JSON"}
           </button>
           {records.length > 0 ? (
-            <button
-              className="text-xs text-dim underline-offset-4 transition hover:text-accent hover:underline"
-              onClick={onClear}
-            >
-              清空全部
-            </button>
+            <>
+              <JsonDownloadButton label="备份历史" filename="sensitivity-history-v1.json" data={historyBackup(records)} />
+              <button
+                className="text-xs text-dim underline-offset-4 transition hover:text-accent hover:underline"
+                onClick={onClear}
+              >
+                清空全部
+              </button>
+            </>
           ) : null}
         </div>
       </header>
@@ -137,8 +146,10 @@ export default function HistoryPage() {
       {error ? <p role="alert" className="mb-4 text-sm text-warn">{error}</p> : null}
       {importNotice ? (
         <p role="status" className="mb-4 text-sm text-fg">
-          {importNotice.duplicate ? "这次测试已在历史中。" : "已导入测试结果。"}{" "}
-          <Link className="text-accent underline underline-offset-4" href={`/results?id=${importNotice.id}`}>查看结果</Link>
+          {importNotice.message}{" "}
+          {importNotice.id ? (
+            <Link className="text-accent underline underline-offset-4" href={`/results?id=${importNotice.id}`}>查看结果</Link>
+          ) : null}
         </p>
       ) : null}
       {!mounted ? (

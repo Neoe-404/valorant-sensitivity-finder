@@ -95,6 +95,21 @@ function makeFlick(
 }
 
 describe("scoring: flick", () => {
+  it("does not let one quick hit offset nineteen misses", () => {
+    const records = makeFlick(36, 20, [
+      { timeToTarget: 300, reactionTime: 120, totalMouseDistance: 316 },
+      ...Array.from({ length: 19 }, () => ({ hit: false })),
+    ]);
+    const result = computeFlickScore({ records, targetRadius: 36, durationMs: 10000 });
+    expect(result.accuracy).toBe(0.05);
+    expect(result.avgTimeToTarget).toBe(300);
+    expect(result.breakdown.speed).toBe(5);
+    expect(result.consistency).toBe(0);
+    expect(result.score).toBeCloseTo(4);
+    const legacy = computeFlickScore({ records, targetRadius: 36, durationMs: 10000, method: "hits-only" });
+    expect(legacy.score).toBeCloseTo(73.4);
+  });
+
   it("no hits never earn speed, reaction or consistency points", () => {
     const records = makeFlick(36, 20, Array.from({ length: 20 }, () => ({ hit: false })));
     const noHits = computeFlickScore({ records, targetRadius: 36, durationMs: 10000 });

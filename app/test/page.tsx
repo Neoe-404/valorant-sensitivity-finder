@@ -184,7 +184,14 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
         crosshairColor={settings.crosshairColor}
         onQuit={() => confirmQuit("/history")}
       >
-        {s.testIndex === 0 && <FlickTest mode={settings.mode} plan={s.plan} onComplete={flow.recordTestResult} />}
+        {s.testIndex === 0 && (
+          <FlickTest
+            mode={settings.mode}
+            plan={s.plan}
+            scoringMethod={initialRun && initialRun.progress.version < 5 ? "hits-only" : "all-attempts"}
+            onComplete={flow.recordTestResult}
+          />
+        )}
         {s.testIndex === 1 && (
           <TrackingTest
             mode={settings.mode}

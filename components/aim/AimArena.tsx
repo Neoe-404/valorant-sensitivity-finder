@@ -120,13 +120,13 @@ export interface AimArenaProps {
  * 全屏测试区域：
  * - Pointer Lock 捕获真实鼠标增量 movementX/Y
  * - 虚拟准星位置 = 累积 (movementX/Y × multiplier)，存 ref，不经 React State
- * - 所有绘制走 Canvas + requestAnimationFrame，保证高帧率
+ * - 运行时用 requestAnimationFrame 采样和绘制，等待或暂停时按需绘制
  * - 窗口失焦 / 指针锁释放 → 自动暂停，避免记录无效数据
  */
 export function AimArena({ multiplier, referenceWidth, crosshairColor, children, onPhaseChange }: AimArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { locked, lockedRef, rawInput, requestLock, exitLock } = usePointerLock(containerRef);
+  const { locked, lockedRef, rawInput, requestLock, exitLock, ownsLock } = usePointerLock(containerRef);
   const { pendingRef, handleMove, flush } = useMouseTracking();
 
   const [phase, setPhase] = useState<ArenaPhase>("idle");
@@ -135,7 +135,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   const [lockError, setLockError] = useState(false);
   const [restartRequired, setRestartRequired] = useState(false);
   const restartRequiredRef = useRef(false);
-  const startingRef = useRef(false);
+  const startingRef = useRef<symbol | null>(null);
   const setPhaseSafe = useCallback(
     (p: ArenaPhase) => {
       phaseRef.current = p;
@@ -162,6 +162,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   });
   const lastRawRef = useRef({ dx: 0, dy: 0 });
   const sizeRef = useRef({ w: 0, h: 0, dpr: 1, pixelRatio: 0 });
+  const paintStillRef = useRef<(() => void) | null>(null);
   const lastSampleAtRef = useRef<number | null>(null);
 
   const advanceCursor = useCallback(() => {
@@ -178,17 +179,24 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   }, [flush, multiplier, referenceWidth]);
 
   const canSample = useCallback(() =>
-    phaseRef.current === "running" && lockedRef.current &&
-    document.pointerLockElement === containerRef.current,
-  [lockedRef]);
+    phaseRef.current === "running" && lockedRef.current && ownsLock(),
+  [lockedRef, ownsLock]);
 
   const pause = useCallback((reason?: ArenaPauseReason) => {
-    if (phaseRef.current !== "running") return;
+    if (phaseRef.current !== "running") {
+      if (startingRef.current !== null) {
+        startingRef.current = null;
+        exitLock();
+      }
+      return;
+    }
     setPauseReason(reason ?? null);
     setPhaseSafe("paused");
     lastSampleAtRef.current = null;
     flush();
     activeRef.current?.onReset?.();
+    sceneRef.current.trail = [];
+    sceneRef.current.hitMarks = [];
     exitLock();
   }, [exitLock, flush, setPhaseSafe]);
 
@@ -203,7 +211,9 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       const previous = sizeRef.current;
       if (previous.w === w && previous.h === h && previous.pixelRatio === pixelRatio) return;
 
-      if (phaseRef.current !== "idle" && !restartRequiredRef.current) {
+      const measured = previous.pixelRatio > 0;
+      if (measured && startingRef.current !== null) pause();
+      if (measured && phaseRef.current !== "idle" && !restartRequiredRef.current) {
         restartRequiredRef.current = true;
         setRestartRequired(true);
         setLockError(false);
@@ -217,6 +227,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       cv.style.width = `${w}px`;
       cv.style.height = `${h}px`;
       cursorRef.current = { x: w / 2, y: h / 2 };
+      if (phaseRef.current !== "running") paintStillRef.current?.();
     };
 
     const resolutionQuery = () => window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
@@ -242,8 +253,9 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
 
   // 失去指针锁后禁止采样。
   useEffect(() => {
-    if (!locked) pause();
-  }, [locked, pause]);
+    // 读取最新锁状态，避免载入时的旧渲染状态取消刚刚通过的请求。
+    if (phaseRef.current === "running" && !lockedRef.current) pause();
+  }, [locked, lockedRef, pause]);
 
   useEffect(() => {
     const onBlur = () => pause();
@@ -318,6 +330,17 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       }
       ctx.stroke();
 
+      if (!running) {
+        if (phaseRef.current === "paused") {
+          drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
+            ...CROSSHAIR_DEFAULTS,
+            color: crosshairColor || CROSSHAIR_DEFAULTS.color,
+            alpha: 0.4,
+          });
+        }
+        return;
+      }
+
       const scene = sceneRef.current;
       // 轨迹（渐隐）
       const trail = scene.trail;
@@ -379,37 +402,43 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         }
       }
 
-      // 准星（站在目标上的视觉层级）；暂停时半透明保留定位参考
-      if (running) {
-        drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
-          ...CROSSHAIR_DEFAULTS,
-          color: crosshairColor || CROSSHAIR_DEFAULTS.color,
-        });
-      } else if (phaseRef.current === "paused") {
-        drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
-          ...CROSSHAIR_DEFAULTS,
-          color: crosshairColor || CROSSHAIR_DEFAULTS.color,
-          alpha: 0.4,
-        });
-      }
+      drawCrosshair(ctx, cursorRef.current.x, cursorRef.current.y, {
+        ...CROSSHAIR_DEFAULTS,
+        color: crosshairColor || CROSSHAIR_DEFAULTS.color,
+      });
     },
     [crosshairColor]
   );
 
-  // 主循环
+  // 只有运行且仍持有指针锁时，才排下一帧。
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
     const ctx = cv.getContext("2d");
     if (!ctx) return;
 
-    let raf = 0;
+    let raf: number | null = null;
     let fpsFrames = 0;
     let fpsT = performance.now();
     let fps = 60;
 
+    const paint = (now: number, running: boolean) => {
+      const { w, h, dpr } = sizeRef.current;
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      draw(ctx, w, h, now, running);
+      ctx.restore();
+    };
+    const paintStill = () => paint(performance.now(), false);
+    paintStillRef.current = paintStill;
+
     const tick = (now: number) => {
-      raf = requestAnimationFrame(tick);
+      raf = null;
+      const dt = Math.max(0, now - (lastSampleAtRef.current ?? now));
+      if (!canSample() || dt >= MAX_FRAME_GAP_MS) {
+        pause();
+        return;
+      }
 
       fpsFrames++;
       if (now - fpsT >= 1000) {
@@ -419,51 +448,51 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       }
 
       const { w, h, dpr } = sizeRef.current;
-      const running = canSample();
-      const dt = Math.max(0, now - (lastSampleAtRef.current ?? now));
-      if (running && dt >= MAX_FRAME_GAP_MS) {
-        pause();
-      } else if (running) {
-        lastSampleAtRef.current = now;
-        const { dx, dy } = advanceCursor();
-        frameRef.current = {
-          now,
-          dt,
-          x: cursorRef.current.x,
-          y: cursorRef.current.y,
-          dx,
-          dy,
-          w,
-          h,
-          dpr,
-          fps,
-        };
-        activeRef.current?.onFrame(frameRef.current, sceneRef.current);
-      }
+      lastSampleAtRef.current = now;
+      const { dx, dy } = advanceCursor();
+      frameRef.current = {
+        now,
+        dt,
+        x: cursorRef.current.x,
+        y: cursorRef.current.y,
+        dx,
+        dy,
+        w,
+        h,
+        dpr,
+        fps,
+      };
+      activeRef.current?.onFrame(frameRef.current, sceneRef.current);
 
-      // 绘制
-      ctx.save();
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      draw(ctx, w, h, now, running && phaseRef.current === "running");
-      ctx.restore();
+      if (canSample()) {
+        paint(now, true);
+        raf = requestAnimationFrame(tick);
+      }
     };
 
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [advanceCursor, canSample, draw, pause]);
+    if (phase === "running" && locked) raf = requestAnimationFrame(tick);
+    else paintStill();
+    return () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      paintStillRef.current = null;
+    };
+  }, [advanceCursor, canSample, draw, locked, pause, phase]);
 
   const requestLockAndStart = useCallback(() => {
-    if (startingRef.current || restartRequiredRef.current) return;
-    startingRef.current = true;
+    if (startingRef.current !== null || restartRequiredRef.current) return;
+    const attempt = Symbol();
+    startingRef.current = attempt;
+    setLockError(false);
     void (async () => {
       const ok = await requestLock();
-      startingRef.current = false;
+      if (startingRef.current !== attempt) return;
+      startingRef.current = null;
       if (!containerRef.current) return;
       if (restartRequiredRef.current) {
         if (ok) exitLock();
         return;
       }
-      if (ok) {
+      if (ok && ownsLock()) {
         // 锁定成功：清掉暂停期间可能残留的增量，避免恢复时准星跳跃
         flush();
         lastSampleAtRef.current = null;
@@ -471,10 +500,11 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         setPauseReason(null);
         setPhaseSafe("running");
       } else {
+        exitLock();
         setLockError(true);
       }
     })();
-  }, [requestLock, flush, setPhaseSafe, exitLock]);
+  }, [requestLock, flush, setPhaseSafe, exitLock, ownsLock]);
 
   const resume = requestLockAndStart;
 

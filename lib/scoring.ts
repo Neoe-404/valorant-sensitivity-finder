@@ -37,10 +37,13 @@ const MICRO_STABILITY_CV_ZERO = 0.6;
 
 /* ================= Flick ================= */
 
+export type FlickScoringMethod = "all-attempts" | "hits-only";
+
 export interface FlickScoringInput {
   records: FlickTargetRecord[];
   targetRadius: number;
   durationMs: number;
+  method?: FlickScoringMethod;
 }
 
 export function computeFlickScore(input: FlickScoringInput): FlickResult {
@@ -64,16 +67,23 @@ export function computeFlickScore(input: FlickScoringInput): FlickResult {
   const timeCv = cv(ttts);
   const avgCorr = mean(corrections);
 
+  // 命中样本才能提供速度、反应和路径数据。未命中的尝试在这些分项中贡献为零。
+  const legacy = input.method === "hits-only";
+  const hitWeight = legacy ? 1 : accuracy;
+  const hasConsistencySample = hits.length >= (legacy ? 1 : 2);
+
   // --- 分项分 ---
   const accuracyScore = accuracy * 100;
   // 到达速度：380ms 满分，每 6ms 扣 1 分
-  const speedScore = hits.length ? clamp(100 - (avgTTT - 380) / 6, 0, 100) : 0;
+  const speedScore = hits.length ? clamp(100 - (avgTTT - 380) / 6, 0, 100) * hitWeight : 0;
   // 反应：160ms 满分，每 4ms 扣 1 分
-  const reactionScore = hits.length ? clamp(100 - (avgReaction - 160) / 4, 0, 100) : 0;
+  const reactionScore = hits.length ? clamp(100 - (avgReaction - 160) / 4, 0, 100) * hitWeight : 0;
   // 路径效率：直线 = 100，弯弯绕绕 = 低
-  const efficiencyScore = avgEff * 100;
+  const efficiencyScore = avgEff * 100 * hitWeight;
   // 一致性：到达时间 CV 0 → 100 分，CV 0.6 → 0 分
-  const consistency = hits.length ? clamp(100 * (1 - timeCv / FLICK_CONSISTENCY_CV_ZERO), 0, 100) : 0;
+  const consistency = hasConsistencySample
+    ? clamp(100 * (1 - timeCv / FLICK_CONSISTENCY_CV_ZERO), 0, 100) * hitWeight
+    : 0;
 
   // --- 汇总 + 惩罚 ---
   const raw =

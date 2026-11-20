@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { eDpi, cmPer360, virtualSensitivityScale, MIN_SENS, MAX_SENS } from "@/lib/mouse-math";
-import { loadSettings, saveSettings } from "@/lib/storage";
-import { validateSettingsInput } from "@/lib/validation";
+import { getSessionForResults, loadSettings, loadTestProgress, saveSettings } from "@/lib/storage";
+import { parsePlayerSettings, validateSettingsInput } from "@/lib/validation";
 import {
   DEFAULT_SETTINGS,
   TEST_MODES,
@@ -13,6 +13,27 @@ import type { PlayerSettings } from "@/types";
 import { Crosshair, Monitor, Send } from "lucide-react";
 
 export default function SetupPage() {
+  return (
+    <Suspense fallback={<SetupLoading />}>
+      <SetupEntry />
+    </Suspense>
+  );
+}
+
+function SetupLoading() {
+  return (
+    <main className="mx-auto max-w-2xl px-4 py-16 sm:px-6">
+      <div className="h-96 animate-pulse rounded-xl border border-line bg-panel" />
+    </main>
+  );
+}
+
+function SetupEntry() {
+  const retestId = useSearchParams().get("fromResult");
+  return <SetupForm key={retestId === null ? "setup" : `result:${retestId}`} retestId={retestId} />;
+}
+
+function SetupForm({ retestId }: { retestId: string | null }) {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [form, setForm] = useState<PlayerSettings>({ ...DEFAULT_SETTINGS });
@@ -20,29 +41,31 @@ export default function SetupPage() {
   const [dpiText, setDpiText] = useState(String(DEFAULT_SETTINGS.dpi));
   const [sensText, setSensText] = useState(String(DEFAULT_SETTINGS.baseSensitivity));
   const [errors, setErrors] = useState<string[]>([]);
+  const [retestStatus, setRetestStatus] = useState<"loaded" | "missing" | null>(null);
+  const [hasProgress, setHasProgress] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const saved = loadSettings();
-    if (saved) {
-      setForm((f) => ({ ...f, ...saved }));
-      setDpiText(String(saved.dpi));
-      setSensText(String(saved.baseSensitivity));
-    }
-    // 读取屏幕实际尺寸
-    if (typeof window !== "undefined") {
-      setForm((f) => ({ ...f, screenWidth: window.innerWidth, screenHeight: window.innerHeight }));
+    const previous = loadSettings() ?? DEFAULT_SETTINGS;
+    const source = retestId ? getSessionForResults(retestId) : null;
+    const retest = source && parsePlayerSettings({
+      ...previous,
+      dpi: source.recommendation.dpi,
+      baseSensitivity: source.recommendation.sensitivity,
+      mode: source.settings.mode,
+    });
+    const initial = retest ?? previous;
+    setForm({ ...initial, screenWidth: window.innerWidth, screenHeight: window.innerHeight });
+    setDpiText(String(initial.dpi));
+    setSensText(String(initial.baseSensitivity));
+    if (retestId !== null) {
+      setRetestStatus(retest ? "loaded" : "missing");
+      setHasProgress(Boolean(loadTestProgress()));
     }
     setMounted(true);
-  }, []);
+  }, [retestId]);
 
-  if (!mounted) {
-    return (
-      <main className="mx-auto max-w-2xl px-4 py-16 sm:px-6">
-        <div className="h-96 animate-pulse rounded-xl border border-line bg-panel" />
-      </main>
-    );
-  }
+  if (!mounted) return <SetupLoading />;
 
   const set = <K extends keyof PlayerSettings>(key: K, value: PlayerSettings[K]) => {
     setForm((f) => ({ ...f, [key]: value }));
@@ -80,10 +103,18 @@ export default function SetupPage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-14 sm:px-6">
       <header className="mb-10">
-        <h1 className="text-3xl font-bold tracking-tight">玩家设置</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{retestStatus === "loaded" ? "复测设置" : "玩家设置"}</h1>
         <p className="mt-2 text-sm text-dim">
-          输入你当前的真实参数，作为灵敏度搜索的基准。
+          {retestStatus === "loaded"
+            ? "已填入该次测试的 DPI、推荐灵敏度和测试模式。确认参数后即可开始。"
+            : "输入你当前的真实参数，作为灵敏度搜索的基准。"}
         </p>
+        {retestStatus === "missing" ? (
+          <p role="status" className="mt-3 text-sm text-warn">该测试结果已不可用，可以在下方手动设置参数。</p>
+        ) : null}
+        {hasProgress ? (
+          <p className="mt-3 text-sm text-dim">浏览器中有可继续的测试。进入测试后，可以继续原进度或用新设置重新开始。</p>
+        ) : null}
       </header>
 
       {errors.length > 0 && (
@@ -208,6 +239,7 @@ export default function SetupPage() {
                 key={m.value}
                 type="button"
                 onClick={() => set("mode", m.value)}
+                aria-pressed={form.mode === m.value}
                 className={`rounded-lg border p-4 text-left transition ${
                   form.mode === m.value
                     ? "border-accent bg-accent/10"

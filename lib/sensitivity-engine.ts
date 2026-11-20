@@ -8,7 +8,7 @@
  * 3. 一轮结束：以前三名候选（含并列）的分数平方加权平均作为下一轮中心。
  * 4. 逐步缩小搜索范围。已测灵敏度沿用原成绩，某一步没有新值就尝试下一步。
  * 5. 收敛条件：新中心与上轮中心变化 < 1% base，或用完当前模式的搜索步长。
- * 6. 最终推荐：取 bestScore×0.92 以上的候选池，按分数加权求推荐值，
+ * 6. 最终推荐：在达到最高分 92% 的连续区间中，选最高分所在区间按分加权。
  *    区间 = 候选池 sens 范围夹紧推荐值 ± 最新步长（有最小半宽，单一候选池
  *    保持对称区间）；置信度由区间宽度、top 差距、候选池大小和完成轮数
  *    共同决定，单一候选池或过窄区间会降级。
@@ -39,8 +39,8 @@ export const MAX_ROUNDS_QUICK = 3;
 export const POOL_SCORE_THRESHOLD = 0.92;
 /** 推荐区间最小半宽（绝对灵敏度值），防止零宽区间 */
 const MIN_RANGE_HALF_WIDTH = 0.006;
-/** 单一候选池的置信度上限（依据不足时最多到 Medium） */
-const SINGLE_BASIS_CONFIDENCE_CAP = 55;
+/** 只有一个候选支撑推荐或高分区间分离时，置信度最多为 Medium。 */
+const LIMITED_CONFIDENCE_CAP = 55;
 /** 区间相对宽度低于该比例视为"过窄"，扣减置信度 */
 const NARROW_RANGE_RATIO = 0.01;
 const NARROW_RANGE_PENALTY = 20;
@@ -50,6 +50,30 @@ interface CompletedTests {
   flick: FlickMeasurement;
   tracking: TrackingMeasurement;
   micro: MicroMeasurement;
+}
+
+function highScoreRegion(ranked: CandidateScore[], qualified: CandidateScore[]) {
+  const bySensitivity = [...ranked].sort((a, b) => a.sensitivity - b.sensitivity);
+  const eligible = new Set(qualified);
+  const bestIndex = bySensitivity.indexOf(ranked[0]);
+  let start = bestIndex;
+  let end = bestIndex;
+
+  // 相邻的低分实测值是边界，避免跨过它去平均另一侧的高分。
+  while (start > 0 && eligible.has(bySensitivity[start - 1])) start--;
+  while (end + 1 < bySensitivity.length && eligible.has(bySensitivity[end + 1])) end++;
+  const region = new Set(bySensitivity.slice(start, end + 1));
+  return {
+    pool: qualified.filter((candidate) => region.has(candidate)),
+    separated: region.size < qualified.length,
+    lowerNeighbor: start > 0 ? bySensitivity[start - 1] : undefined,
+    upperNeighbor: bySensitivity[end + 1],
+  };
+}
+
+function qualifyingScores(ranked: CandidateScore[]): CandidateScore[] {
+  const threshold = (ranked[0].overallScore ?? 0) * POOL_SCORE_THRESHOLD;
+  return ranked.filter((candidate) => (candidate.overallScore ?? 0) >= threshold);
 }
 
 export class SensitivitySearch {
@@ -62,7 +86,12 @@ export class SensitivitySearch {
   private currentStep = 1;
   private done = false;
 
-  constructor(base: number, dpi: number, mode: "quick" | "standard") {
+  constructor(
+    base: number,
+    dpi: number,
+    mode: "quick" | "standard",
+    private readonly recommendationMethod: "contiguous" | "all-high" = "contiguous",
+  ) {
     this.base = clampSensitivity(base);
     this.dpi = dpi;
     this.maxRounds = mode === "quick" ? MAX_ROUNDS_QUICK : MAX_ROUNDS_STANDARD;
@@ -96,14 +125,20 @@ export class SensitivitySearch {
 
   /** 生成下一轮候选（未被测试的），返回 null 表示结束 */
   nextRound(): number[] | null {
-    if (this.done || !this.bestCandidate()) return null;
+    if (this.done) return null;
+    const ranked = this.rankedCandidates();
+    if (!ranked.length) return null;
 
     if (this.currentStep >= this.maxRounds) {
       this.done = true;
       return null;
     }
 
-    const center = this.weightedCenter();
+    const region = this.recommendationMethod === "contiguous"
+      ? highScoreRegion(ranked, qualifyingScores(ranked))
+      : null;
+    const separate = region?.separated ? region : null;
+    const center = this.weightedCenter(separate?.pool ?? ranked);
     // 收敛判定：中心几乎不再移动
     if (this.previousCenter !== null && Math.abs(center - this.previousCenter) < this.base * 0.01) {
       this.done = true;
@@ -112,7 +147,10 @@ export class SensitivitySearch {
 
     // 没有新候选的步长不占用一轮，也不参与推荐区间的计算。
     for (let step = this.currentStep + 1; step <= this.maxRounds; step++) {
-      const candidates = this.roundCandidates(center, step);
+      const candidates = this.roundCandidates(center, step).filter((sensitivity) =>
+        (!separate?.lowerNeighbor || sensitivity > separate.lowerNeighbor.sensitivity) &&
+        (!separate?.upperNeighbor || sensitivity < separate.upperNeighbor.sensitivity)
+      );
       if (candidates.length === 0) continue;
       this.previousCenter = center;
       this.currentStep = step;
@@ -124,13 +162,16 @@ export class SensitivitySearch {
     return null;
   }
 
+  private rankedCandidates(): CandidateScore[] {
+    return this.candidates
+      .filter((candidate) => candidate.finished && candidate.overallScore !== null)
+      .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
+  }
+
   /** 分数平方加权。第三名并列时纳入同分候选，避免按测试顺序取舍。 */
-  private weightedCenter(): number {
-    const finished = this.candidates.filter((c) => c.finished && c.overallScore !== null);
-    if (finished.length === 0) return this.base;
-    const sorted = [...finished].sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
-    const cutoff = sorted[2]?.overallScore ?? 0;
-    const top = sorted.filter((card) => (card.overallScore ?? 0) >= cutoff);
+  private weightedCenter(ranked: CandidateScore[]): number {
+    const cutoff = ranked[2]?.overallScore ?? 0;
+    const top = ranked.filter((candidate) => (candidate.overallScore ?? 0) >= cutoff);
     if (top.length === 1) return top[0].sensitivity;
     const totalWeight = top.reduce((s, c) => s + (c.overallScore ?? 0) * (c.overallScore ?? 0), 0);
     if (totalWeight <= 0) return top[0].sensitivity;
@@ -222,14 +263,14 @@ export class SensitivitySearch {
    */
   recommend(): SensitivityRecommendation {
     this.recomputeConfidence();
-    const finished = this.candidates.filter((c) => c.finished && c.overallScore !== null);
-    const sorted = [...finished].sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
+    const sorted = this.rankedCandidates();
     const best = sorted[0];
     if (!best) {
       throw new Error("No completed candidates available for recommendation");
     }
-    // 候选池：得分 ≥ best × 0.92
-    const pool = sorted.filter((c) => (c.overallScore ?? 0) >= (best.overallScore ?? 0) * POOL_SCORE_THRESHOLD);
+    const qualified = qualifyingScores(sorted);
+    const region = this.recommendationMethod === "contiguous" ? highScoreRegion(sorted, qualified) : null;
+    const pool = region?.pool ?? qualified;
     const sensValues = pool.map((c) => c.sensitivity);
     const weights = pool.map((c) => c.overallScore ?? 0);
     const totalWeight = weights.reduce((s, w) => s + w, 0);
@@ -252,6 +293,9 @@ export class SensitivitySearch {
       rangeMin = roundSensitivity(Math.max(poolMin, recommended - halfWidth));
       rangeMax = roundSensitivity(Math.min(poolMax, recommended + halfWidth));
     }
+    // 单点区间也不能延伸到已知低分的相邻灵敏度。
+    if (region?.lowerNeighbor) rangeMin = Math.max(rangeMin, roundSensitivity(region.lowerNeighbor.sensitivity + 0.001));
+    if (region?.upperNeighbor) rangeMax = Math.min(rangeMax, roundSensitivity(region.upperNeighbor.sensitivity - 0.001));
     // 钳制到合法灵敏度范围：越界的区间会被快照校验拒绝，导致结果无法写入历史
     rangeMin = roundSensitivity(clampSensitivity(rangeMin));
     rangeMax = roundSensitivity(clampSensitivity(rangeMax));
@@ -266,7 +310,7 @@ export class SensitivitySearch {
     let confidence =
       100 - spread * 380 - (topGap < 2 ? 25 : 0) - basisPenalty - narrowPenalty + this.currentRound * 5;
     confidence = clamp(Math.round(confidence), 35, 90);
-    if (pool.length < 2) confidence = Math.min(confidence, SINGLE_BASIS_CONFIDENCE_CAP);
+    if (pool.length < 2 || region?.separated) confidence = Math.min(confidence, LIMITED_CONFIDENCE_CAP);
 
     return {
       sensitivity: roundSensitivity(recommended),
@@ -278,9 +322,12 @@ export class SensitivitySearch {
       confidenceLabel: labelFor(confidence),
       basisCount: pool.length,
       basis: sensValues,
-      reason: `${pool.length} 个候选灵敏度参与加权（得分 ≥ 最佳×0.92），区间跨度 ${
-        Math.round(((rangeMax - rangeMin) / recommended) * 100)
-      }%。`,
+      ...(region?.separated ? { hasSeparatedHighScores: true } : {}),
+      reason: region?.separated
+        ? "高分候选被低分实测点隔开。推荐依据最高分所在的一侧，置信指标已下调。"
+        : `${pool.length} 个候选灵敏度参与加权（得分 ≥ 最佳×0.92），区间跨度 ${
+          Math.round(((rangeMax - rangeMin) / recommended) * 100)
+        }%。`,
     };
   }
 

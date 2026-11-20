@@ -146,8 +146,8 @@ describe("search update", () => {
   it.each([
     { mode: "quick", next: null, rounds: 2 },
     { mode: "standard", next: [0.051, 0.056], rounds: 3 },
-  ] as const)("skips an entirely tested range in $mode mode", ({ mode, next, rounds }) => {
-    const search = new SensitivitySearch(0.053, 800, mode);
+  ] as const)("preserves the skipped steps of saved $mode searches using the previous policy", ({ mode, next, rounds }) => {
+    const search = new SensitivitySearch(0.053, 800, mode, "all-high");
     completeRound(search, search.initialCandidates(), (s) => s === 0.05 ? 80 : 20);
     const second = search.nextRound();
     expect(second).toEqual([0.052, 0.058]);
@@ -161,6 +161,61 @@ describe("search update", () => {
 });
 
 describe("recommendation", () => {
+  it("does not recommend the low-scoring point between two high-scoring candidates", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    for (const sensitivity of search.initialCandidates()) {
+      const score = sensitivity === 0.35 ? 30 : 95;
+      search.completeCandidate(sensitivity, {
+        flick: fakeFlick(score), tracking: fakeTracking(score), micro: fakeMicro(score),
+      });
+    }
+    const rec = search.recommend();
+    expect(rec.sensitivity).toBe(0.28);
+    expect(rec.basis).toEqual([0.28]);
+    expect(rec.rangeMax).toBeLessThan(0.35);
+    expect(rec.hasSeparatedHighScores).toBe(true);
+    expect(search.nextRound()).toEqual([0.246, 0.314]);
+  });
+
+  it("confines the next round before the low-scoring neighbor", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    search.initialCandidates();
+    for (const [sensitivity, score] of [[0.34, 95], [0.35, 30], [0.42, 94]]) {
+      search.completeCandidate(sensitivity, {
+        flick: fakeFlick(score), tracking: fakeTracking(score), micro: fakeMicro(score),
+      });
+    }
+    expect(search.nextRound()).toEqual([0.299]);
+    expect(search.recommend().rangeMax).toBe(0.349);
+  });
+
+  it("limits confidence even when the winning region itself contains several high scores", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    search.initialCandidates();
+    for (const [sensitivity, score] of [[0.28, 95], [0.29, 91], [0.35, 30], [0.42, 90]]) {
+      search.completeCandidate(sensitivity, {
+        flick: fakeFlick(score), tracking: fakeTracking(score), micro: fakeMicro(score),
+      });
+    }
+    const rec = search.recommend();
+    expect(rec.basis).toEqual([0.28, 0.29]);
+    expect(rec.sensitivity).toBe(0.285);
+    expect(rec.confidence).toBeLessThanOrEqual(55);
+    expect(rec.hasSeparatedHighScores).toBe(true);
+  });
+
+  it("keeps a single legal point when nearby low scores leave no gap to explore", () => {
+    const search = new SensitivitySearch(0.35, 800, "quick");
+    search.initialCandidates();
+    for (const [sensitivity, score] of [[0.349, 30], [0.35, 95], [0.351, 30], [0.42, 94]]) {
+      search.completeCandidate(sensitivity, {
+        flick: fakeFlick(score), tracking: fakeTracking(score), micro: fakeMicro(score),
+      });
+    }
+    expect(search.nextRound()).toBeNull();
+    expect(search.recommend()).toMatchObject({ sensitivity: 0.35, rangeMin: 0.35, rangeMax: 0.35 });
+  });
+
   it("refuses a recommendation when every candidate has zero weight", () => {
     const search = new SensitivitySearch(0.35, 800, "quick");
     for (const sens of search.initialCandidates()) {

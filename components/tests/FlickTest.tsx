@@ -2,7 +2,7 @@
 
 import { useRef } from "react";
 import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
-import { computeFlickScore } from "@/lib/scoring";
+import { computeFlickScore, type FlickScoringMethod } from "@/lib/scoring";
 import { matchedSpawnPoint, type ScenePlan } from "@/lib/test-plan";
 import { FLICK_RADIUS, configFor, dist, randomSpawnPoint } from "./shared";
 import { useActiveTest } from "@/hooks/useActiveTest";
@@ -12,6 +12,7 @@ import type { SceneTarget } from "@/components/aim/Target";
 interface FlickTestProps {
   mode: TestMode;
   plan?: ScenePlan;
+  scoringMethod?: FlickScoringMethod;
   onComplete: (result: FlickResult) => void;
 }
 
@@ -39,7 +40,7 @@ interface FlickState {
  * Flick Test：20 个随机目标，记录每个目标的
  * 起点/命中点/路径/总距离/理想距离/反应/修正/过冲/欠冲。
  */
-export function FlickTest({ mode, onComplete, plan }: FlickTestProps) {
+export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
@@ -205,6 +206,7 @@ export function FlickTest({ mode, onComplete, plan }: FlickTestProps) {
         records: s.records,
         targetRadius: FLICK_RADIUS,
         durationMs: s.elapsedMs,
+        method: scoringMethod,
       });
       onCompleteRef.current(result);
     }

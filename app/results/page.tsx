@@ -7,6 +7,8 @@ import { useSearchParams } from "next/navigation";
 import { getHistoryRecord, getSessionForResults, loadTestProgress } from "@/lib/storage";
 import { analyzeResult } from "@/lib/analysis-engine";
 import { roundSensitivity } from "@/lib/mouse-math";
+import { bestMeasuredCandidate, formatMeasuredScore } from "@/lib/result-record";
+import { CandidateScoreSummary } from "@/components/results/CandidateScoreSummary";
 import { SensitivityResult } from "@/components/results/SensitivityResult";
 import { ScoreCard } from "@/components/results/ScoreCard";
 import { ExportResultButton } from "@/components/results/ExportResultButton";
@@ -78,11 +80,12 @@ function ResultsContent() {
     c.finished && c.overallScore !== null && c.sensitivity === rec.sensitivity
   );
   const baseline = roundSensitivity(settings.baseSensitivity);
+  const measuredBaseline = bestMeasuredCandidate(candidates.filter((candidate) => candidate.sensitivity === baseline));
   const basis = new Set(rec.basis);
 
   // 未完成的候选分数显示为「—」，避免与真实 0 分混淆
   const scoreCell = (v: number | null) =>
-    v === null ? <span className="text-dim">—</span> : Math.round(v);
+    v === null ? <span className="text-dim">—</span> : formatMeasuredScore(v);
 
   const sevIcon = (s: string) =>
     s === "good" ? <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-good" /> : s === "warn" ? <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" /> : <Info size={15} className="mt-0.5 shrink-0 text-accent" />;
@@ -115,13 +118,7 @@ function ResultsContent() {
           {best ? `实测最高分 · 灵敏度 ${best.sensitivity.toFixed(3)}` : "实测成绩"}
         </h2>
         {best ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-            <ScoreCard label="甩枪" value={Math.round(best.flickScore ?? 0)} tone="accent" />
-            <ScoreCard label="跟枪" value={Math.round(best.trackingScore ?? 0)} tone="accent" />
-            <ScoreCard label="微调" value={Math.round(best.microScore ?? 0)} tone="accent" />
-            <ScoreCard label="一致性" value={Math.round(best.consistencyScore ?? 0)} tone="warn" />
-            <ScoreCard label="综合" value={Math.round(best.overallScore ?? 0)} tone="good" />
-          </div>
+          <CandidateScoreSummary best={best} baseline={measuredBaseline} baseSensitivity={baseline} />
         ) : (
           <div className="panel p-6 text-center text-sm text-dim">
             暂无完整候选数据，可能本次测试未正常完成。
@@ -196,7 +193,7 @@ function ResultsContent() {
                   <td className="px-4 py-2.5">
                     <div className="flex flex-wrap gap-1 whitespace-nowrap font-sans">
                       {c === best ? <span className="rounded bg-good/10 px-1.5 py-0.5 text-good">最高分</span> : null}
-                      {c.sensitivity === baseline ? <span className="rounded bg-panel-2 px-1.5 py-0.5 text-dim">当前设置</span> : null}
+                      {c.sensitivity === baseline ? <span className="rounded bg-panel-2 px-1.5 py-0.5 text-dim">测试起点</span> : null}
                       {c.finished && c.overallScore !== null && basis.has(c.sensitivity) ? (
                         <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent">计入推荐</span>
                       ) : null}
@@ -211,8 +208,11 @@ function ResultsContent() {
 
       {/* 操作 */}
       <section className="mt-8 flex flex-wrap gap-3">
-        <Link href="/test" className="btn-primary">
-          <TrendingUp size={16} /> 再测一轮
+        <Link href={{ pathname: "/setup", query: { fromResult: snapshot.id } }} className="btn-primary">
+          <TrendingUp size={16} /> 用推荐值复测
+        </Link>
+        <Link href="/test" className="btn-ghost">
+          按已保存设置再测
         </Link>
         <Link href="/history" className="btn-ghost">
           <History size={16} /> 查看历史

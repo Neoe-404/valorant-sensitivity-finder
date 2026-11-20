@@ -100,7 +100,9 @@ export function SensitivityResult({ rec, wasTested }: SensitivityResultProps) {
           <div className="sm:text-right">
             <div className="text-xs tracking-widest text-dim">推荐区间</div>
             <div className="mt-1 font-mono text-lg text-fg">
-              {rec.rangeMin.toFixed(3)} ~ {rec.rangeMax.toFixed(3)}
+              {rec.rangeMin === rec.rangeMax
+                ? rec.rangeMin.toFixed(3)
+                : `${rec.rangeMin.toFixed(3)} ~ ${rec.rangeMax.toFixed(3)}`}
             </div>
           </div>
         </div>
@@ -110,6 +112,7 @@ export function SensitivityResult({ rec, wasTested }: SensitivityResultProps) {
         <p>根据 {rec.basisCount} 个实测候选的综合分计算。{wasTested ? "推荐值有对应实测成绩。" : "推荐值尚未单独实测，可在游戏内试用。"}{" "}
           <a href="#candidate-scores" className="text-accent underline underline-offset-4">查看候选成绩</a>
         </p>
+        {rec.hasSeparatedHighScores ? <p className="text-warn">{rec.reason}</p> : null}
         <p>置信指标为经验估计，供试用时参考。</p>
       </div>
     </div>

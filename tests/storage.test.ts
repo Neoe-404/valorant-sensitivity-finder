@@ -13,6 +13,8 @@ import {
   clearLastSession,
   isStorageAvailable,
   importResult,
+  historyBackup,
+  importHistoryFile,
   saveTestProgress,
   loadTestProgress,
   clearTestProgress,
@@ -270,6 +272,64 @@ describe("storage: importing results", () => {
   });
 });
 
+describe("storage: restoring a history backup", () => {
+  it("merges the full file in chronological order and skips duplicate IDs without overwriting", () => {
+    const local = { ...fakeRecord("local", 0.35), date: "2024-02-01T00:00:00.000Z" };
+    const backup = [
+      { ...fakeRecord("first"), date: "2024-01-01T00:00:00.000Z" },
+      { ...fakeRecord("last"), date: "2024-03-01T00:00:00.000Z" },
+      fakeRecord("local", 0.42),
+      fakeRecord("first", 0.42),
+    ];
+    addHistoryRecord(local);
+    saveLastSession(local.snapshot);
+    const json = "\uFEFF" + JSON.stringify(historyBackup(backup));
+    expect(importHistoryFile(json)).toEqual({ status: "restored", imported: 2, skipped: 2 });
+    expect(getHistory()).toEqual([backup[1], local, backup[0]]);
+    expect(loadLastSession()).toEqual(local.snapshot);
+    expect(importHistoryFile(json)).toEqual({ status: "restored", imported: 0, skipped: 4 });
+  });
+
+  it("rejects the whole backup if an entry is malformed or the format is unsupported", () => {
+    addHistoryRecord(fakeRecord("local"));
+    const original = store.get("vsf:history:v1");
+    const valid = historyBackup([fakeRecord("other")]);
+    const busted = { ...fakeRecord("broken"), snapshot: null };
+    expect(importHistoryFile(JSON.stringify({ ...valid, records: [...valid.records, busted] }))).toEqual({ status: "invalid" });
+    expect(importHistoryFile(JSON.stringify({ ...valid, version: 2 }))).toEqual({ status: "invalid" });
+    expect(store.get("vsf:history:v1")).toBe(original);
+  });
+
+  it("rejects the whole batch before writing if it would exceed the history limit", () => {
+    for (let i = 0; i < 49; i++) addHistoryRecord(fakeRecord(String(i)));
+    const original = store.get("vsf:history:v1");
+    const backup = historyBackup([fakeRecord("one"), fakeRecord("two")]);
+    expect(importHistoryFile(JSON.stringify(backup))).toEqual({ status: "full" });
+    expect(store.get("vsf:history:v1")).toBe(original);
+  });
+
+  it("leaves history unchanged on a storage error", () => {
+    addHistoryRecord(fakeRecord("local"));
+    const original = store.get("vsf:history:v1");
+    window.localStorage.setItem = () => { throw new DOMException("Storage full", "QuotaExceededError"); };
+    const backup = historyBackup([fakeRecord("one"), fakeRecord("two")]);
+    expect(importHistoryFile(JSON.stringify(backup))).toEqual({ status: "full" });
+    expect(store.get("vsf:history:v1")).toBe(original);
+  });
+
+  it("does not hide an active draft or import another record from its backup", () => {
+    const draft: TestProgress = {
+      version: 6, id: "live", settings: fakeSettings(),
+      calibration: { avgMoveSpeed: 0, avgClickDelay: 0, clicks: 0, hitRate: 0 },
+      tests: [],
+    };
+    expect(saveTestProgress(draft, null)).toBe("saved");
+    expect(importHistoryFile(JSON.stringify(historyBackup([fakeRecord("other"), fakeRecord(draft.id)])))).toEqual({ status: "active-test" });
+    expect(getHistory()).toEqual([]);
+    expect(loadTestProgress()).toEqual(draft);
+  });
+});
+
 describe("storage: last session & id", () => {
   it("only falls back to the latest result when IDs match or no ID was requested", () => {
     const snap = fakeSnapshot("latest", 0.42);
@@ -359,7 +419,7 @@ describe("storage: unfinished test progress", () => {
       tests: [{ sensitivity: 0.28, testIndex: 2, measurement: { score: 120, avgCorrections: 0 } }],
     }));
     expect(loadTestProgress()).toBeNull();
-    store.set(key, JSON.stringify({ ...initial, version: 5 }));
+    store.set(key, JSON.stringify({ ...initial, version: 7 }));
     expect(loadTestProgress()).toBeNull();
     expect(saveTestProgress(initial, null)).toBe("saved");
   });

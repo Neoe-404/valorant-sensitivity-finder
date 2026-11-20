@@ -127,7 +127,7 @@ describe("session flow and result handoff", () => {
       completedTests: 11, remainingInRound: 4,
     });
     const progress = loadTestProgress()!;
-    expect(progress.version).toBe(4);
+    expect(progress.version).toBe(6);
     expect(progress.tests).toHaveLength(11);
     expect(progress.tests[0].measurement).not.toHaveProperty("records");
 
@@ -159,14 +159,30 @@ describe("session flow and result handoff", () => {
     expect(TestRun.restore({ ...progress, tests: [{ ...progress.tests[0], sensitivity: 0.42 }] })).toBeNull();
   });
 
-  it.each([1, 2, 3] as const)("retains the rules of version %s after restoring an older run", (version) => {
+  it.each([1, 2, 3, 4, 5] as const)("retains the rules of version %s after restoring an older run", (version) => {
     SessionHarness().finishCalibration(calibration);
     SessionHarness().recordTestResult(samples(true)[0]);
     const progress = loadTestProgress()!;
     const restored = TestRun.restore({ ...progress, version });
     expect(restored?.progress.version).toBe(version);
     expect(restored?.position?.testIndex).toBe(1);
-    expect(Boolean(restored?.position?.plan)).toBe(version === 3);
+    expect(Boolean(restored?.position?.plan)).toBe(version >= 3);
+  });
+
+  it.each([
+    { version: 5, next: [0.308, 0.392], recommendation: 0.35 },
+    { version: 6, next: [0.246, 0.314], recommendation: 0.28 },
+  ] as const)("replays high scores on either side of a weak candidate using version $version", ({ version, next, recommendation }) => {
+    const run = new TestRun("split-high-scores", settings, calibration, version);
+    const measured = samples(true);
+    for (let index = 0; index < 9; index++) {
+      const position = run.position!;
+      const score = position.currentSensitivity === 0.35 ? 30 : 95;
+      expect(run.recordResult({ ...measured[position.testIndex], score })).toBe(true);
+    }
+    const restored = TestRun.restore(run.progress)!;
+    expect(restored.position?.roundCandidates).toEqual(next);
+    expect(restored.search.recommend().sensitivity).toBe(recommendation);
   });
 
   it("reuses the session's plan through rendering, retries and a reload", () => {

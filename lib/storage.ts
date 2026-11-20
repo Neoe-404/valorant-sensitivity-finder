@@ -5,7 +5,7 @@
  */
 
 import type { HistoryRecord, PlayerSettings, SessionSnapshot, TestProgress } from "@/types";
-import { isHistoryRecord, isSessionSnapshot, parsePlayerSettings, parseResultExport, parseTestProgress } from "./validation";
+import { isBackupRecord, isHistoryRecord, isSessionSnapshot, parsePlayerSettings, parseResultExport, parseTestProgress } from "./validation";
 import { bestMeasuredCandidate, historyRecordFromSnapshot } from "./result-record";
 
 const KEYS = {
@@ -18,6 +18,12 @@ const KEYS = {
 /** 历史记录最多保留条数（与 UI 展示上限一致）。 */
 const HISTORY_LIMIT = 50;
 export const MAX_RESULT_FILE_BYTES = 256 * 1024;
+export const MAX_HISTORY_FILE_BYTES = 16 * 1024 * 1024;
+const HISTORY_BACKUP_FORMAT = "valorant-sensitivity-finder-history";
+
+export function historyBackup(records: HistoryRecord[]) {
+  return { format: HISTORY_BACKUP_FORMAT, version: 1, records };
+}
 
 // 仅供当前浏览器页面导航使用；不在 SSR 上缓存用户数据。
 let pendingSession: SessionSnapshot | null = null;
@@ -123,30 +129,63 @@ export function getHistoryRecord(id: string): HistoryRecord | null {
   return loadHistory().find((r) => r.id === id) ?? null;
 }
 
-type ResultImportOutcome =
-  | { status: "imported" | "duplicate"; id: string }
-  | { status: "invalid" | "too-large" | "active-test" | "full" | "unavailable" };
+type ImportError = { status: "invalid" | "too-large" | "active-test" | "full" | "unavailable" };
+type ResultImportOutcome = { status: "imported" | "duplicate"; id: string } | ImportError;
+type HistoryImportOutcome = ResultImportOutcome | { status: "restored"; imported: number; skipped: number };
+type HistoryMergeOutcome = { status: "merged"; imported: number; skipped: number } | ImportError;
 
 export function importResult(json: string): ResultImportOutcome {
   if (json.length > MAX_RESULT_FILE_BYTES) return { status: "too-large" };
   const snapshot = parseResultExport(json);
   const best = snapshot && bestMeasuredCandidate(snapshot.candidates);
   if (!snapshot || !best) return { status: "invalid" };
-  if (typeof window === "undefined") return { status: "unavailable" };
+  const result = mergeHistory([historyRecordFromSnapshot(snapshot, best)]);
+  if (result.status !== "merged") return result;
+  return { status: result.imported ? "imported" : "duplicate", id: snapshot.id };
+}
 
-  const { id } = snapshot;
+export function importHistoryFile(json: string, byteLength = json.length): HistoryImportOutcome {
+  if (byteLength > MAX_HISTORY_FILE_BYTES || json.length > MAX_HISTORY_FILE_BYTES) return { status: "too-large" };
+  const value = parse(json.replace(/^\uFEFF/, ""));
+
+  if (!value || typeof value !== "object" || !("format" in value) || value.format !== HISTORY_BACKUP_FORMAT) {
+    if (byteLength > MAX_RESULT_FILE_BYTES) return { status: "too-large" };
+    return importResult(json);
+  }
+
+  if (!("version" in value) || value.version !== 1 || !("records" in value)) return { status: "invalid" };
+  const { records } = value;
+  if (!Array.isArray(records) || records.length > HISTORY_LIMIT || !records.every(isBackupRecord)) {
+    return { status: "invalid" };
+  }
+  const result = mergeHistory(records);
+  return result.status === "merged"
+    ? { status: "restored", imported: result.imported, skipped: result.skipped }
+    : result;
+}
+
+function mergeHistory(incoming: HistoryRecord[]): HistoryMergeOutcome {
+  if (typeof window === "undefined") return { status: "unavailable" };
   try {
     const history = parseHistory(window.localStorage.getItem(KEYS.history));
-    if (history.some((record) => record.id === id)) return { status: "duplicate", id };
+    const seen = new Set(history.map((record) => record.id));
+    const additions = incoming.filter((record) => {
+      if (seen.has(record.id)) return false;
+      seen.add(record.id);
+      return true;
+    });
+    const skipped = incoming.length - additions.length;
+    if (!additions.length) return { status: "merged", imported: 0, skipped };
+
     const progress = readTestProgress();
     if (progress === undefined) return { status: "unavailable" };
-    if (progress?.id === id) return { status: "active-test" };
-    if (history.length >= HISTORY_LIMIT) return { status: "full" };
+    if (additions.some((record) => record.id === progress?.id)) return { status: "active-test" };
+    if (history.length + additions.length > HISTORY_LIMIT) return { status: "full" };
 
-    // 导入只追加记录，不为释放空间删除现有历史。
-    const record = historyRecordFromSnapshot(snapshot, best);
-    const saved = safeSet(KEYS.history, JSON.stringify([record, ...history]));
-    if (saved === "ok") return { status: "imported", id };
+    // 一次写入全部新增记录，配额不足时保留现有历史。
+    const merged = [...additions, ...history].sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+    const saved = safeSet(KEYS.history, JSON.stringify(merged));
+    if (saved === "ok") return { status: "merged", imported: additions.length, skipped };
     return { status: saved === "quota" ? "full" : "unavailable" };
   } catch {
     return { status: "unavailable" };

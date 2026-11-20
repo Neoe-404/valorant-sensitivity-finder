@@ -15,7 +15,7 @@ const label = (value: unknown) => typeof value === "string" && ["Low", "Medium",
 const nonNegative = (value: unknown): value is number => number(value) && value >= 0;
 const fraction = (value: unknown) => between(value, 0, 1);
 const progressVersion = (value: unknown): value is TestProgress["version"] =>
-  value === 1 || value === 2 || value === 3 || value === 4;
+  value === 1 || value === 2 || value === 3 || value === 4 || value === 5 || value === 6;
 
 export function parsePlayerSettings(value: unknown): PlayerSettings | null {
   if (!object(value) || !between(value.dpi, 50, 20000) || !Number.isInteger(value.dpi) ||
@@ -42,7 +42,8 @@ export function isSessionSnapshot(value: unknown): value is SessionSnapshot {
   if (!object(rec) || !sensitivity(rec.sensitivity) || !sensitivity(rec.rangeMin) || !sensitivity(rec.rangeMax) ||
       (rec.rangeMin as number) > (rec.sensitivity as number) || (rec.rangeMax as number) < (rec.sensitivity as number) ||
       !between(rec.dpi, 50, 20000) || !number(rec.eDpi) || !score(rec.confidence) || !label(rec.confidenceLabel) ||
-      !number(rec.basisCount) || !Array.isArray(rec.basis) || !rec.basis.every(sensitivity) || typeof rec.reason !== "string") return false;
+      !number(rec.basisCount) || !Array.isArray(rec.basis) || !rec.basis.every(sensitivity) || typeof rec.reason !== "string" ||
+      (rec.hasSeparatedHighScores !== undefined && typeof rec.hasSeparatedHighScores !== "boolean")) return false;
   const profile = value.profile;
   if (!object(profile) || !["flick", "tracking", "micro", "stability", "speed", "precision"].every((key) => score(profile[key]))) return false;
   if (!Array.isArray(value.analysis) || !value.analysis.every((item) => object(item) &&
@@ -65,13 +66,22 @@ export function isHistoryRecord(value: unknown): value is HistoryRecord {
     label(value.confidenceLabel) && isSessionSnapshot(value.snapshot) && value.snapshot.id === value.id;
 }
 
+function validCandidateMetrics(metrics: unknown): boolean {
+  return metrics === null || (object(metrics) &&
+    [metrics.overshootRate, metrics.undershootRate, metrics.missRate, metrics.flickAccuracy].every(fraction) &&
+    nonNegative(metrics.avgCorrections) && nonNegative(metrics.avgTimeToTarget));
+}
+
+export function isBackupRecord(value: unknown): value is HistoryRecord {
+  return isHistoryRecord(value) && /^[a-zA-Z0-9_-]{1,120}$/.test(value.id) &&
+    value.snapshot.candidates.every((candidate) => validCandidateMetrics(candidate.metrics ?? null));
+}
+
 function validImportedCandidate(candidate: CandidateScore, rounds: number): boolean {
   const { round, metrics, finished, flickScore, trackingScore, microScore, overallScore } = candidate;
   return Number.isInteger(round) && round <= rounds && candidate.multiplier > 0 &&
     (!finished || [flickScore, trackingScore, microScore, overallScore].every(score)) &&
-    (metrics === null || (object(metrics) &&
-      [metrics.overshootRate, metrics.undershootRate, metrics.missRate, metrics.flickAccuracy].every(fraction) &&
-      nonNegative(metrics.avgCorrections) && nonNegative(metrics.avgTimeToTarget)));
+    validCandidateMetrics(metrics);
 }
 
 export function parseResultExport(json: string): SessionSnapshot | null {

@@ -38,8 +38,10 @@ export class TestRun {
   private flick: FlickMeasurement | null = null;
   private tracking: TrackingMeasurement | null = null;
 
-  constructor(id: string, settings: PlayerSettings, calibration: CalibrationSummary, version: TestProgress["version"] = 4) {
-    this.search = new SensitivitySearch(settings.baseSensitivity, settings.dpi, settings.mode);
+  constructor(id: string, settings: PlayerSettings, calibration: CalibrationSummary, version: TestProgress["version"] = 6) {
+    this.search = new SensitivitySearch(
+      settings.baseSensitivity, settings.dpi, settings.mode, version >= 6 ? "contiguous" : "all-high",
+    );
     this.checkpoint = { version, id, settings, calibration, tests: [] };
     this.current = this.positionAt(this.search.initialCandidates(), 0);
   }

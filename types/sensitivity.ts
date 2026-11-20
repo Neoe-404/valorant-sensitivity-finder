@@ -20,8 +20,8 @@ export type RecordedTest = { sensitivity: number } & (
 );
 
 export interface TestProgress {
-  /** 2 起跟枪按时间计分，3 起匹配测试难度，4 起微调按时间计分。 */
-  version: 1 | 2 | 3 | 4;
+  /** 2 起跟枪按时间计分，3 起匹配难度，4 起微调按时间计分，5 起甩枪计入未命中，6 起按连续区域推荐。 */
+  version: 1 | 2 | 3 | 4 | 5 | 6;
   id: string;
   settings: PlayerSettings;
   calibration: CalibrationSummary;
@@ -69,6 +69,7 @@ export interface SensitivityRecommendation {
   basisCount: number;
   /** 参与计算推荐值的候选 */
   basis: number[];
+  hasSeparatedHighScores?: boolean;
   reason: string;
 }
 
