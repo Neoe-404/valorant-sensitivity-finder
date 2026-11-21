@@ -12,10 +12,10 @@ interface CalibrationTestProps {
   onComplete: (result: CalibrationResult) => void;
 }
 
+const CALIBRATION_LIMIT_MS = 20_000;
+
 /**
- * 校准：不计入正式成绩。
- * 建立基准：移动速度 / 活动范围 / 点击延迟基线。
- * 时长约 20 秒或完成 8 个目标。
+ * 校准在 20 秒或达到模式规定的点击次数后结束，不计入正式得分。
  */
 export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
   const aim = useAim();
@@ -31,7 +31,6 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     spawnTime: 0,
     startX: 0,
     startY: 0,
-    clicks: [] as number[],
     clickDelays: [] as number[],
     reachDistances: [] as number[],
     hits: 0,
@@ -64,34 +63,35 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     scene.targets = [s.target];
   };
 
-  const maybeFinish = () => {
-    // 20 秒上限
-    if (s.elapsedMs >= 20000 || s.clicks.length >= s.total || s.finished) {
-      if (s.finished) return;
-      s.finished = true;
-      const durationMs = s.elapsedMs;
-      const totalDist = s.completedDistance + s.moveDist;
-      const avgMoveSpeed = totalDist / Math.max(0.001, durationMs / 1000);
-      const result: CalibrationResult = {
-        durationMs,
-        clicks: s.clicks.length,
-        avgMoveSpeed,
-        avgClickDelay: s.clickDelays.length ? s.clickDelays.reduce((a, b) => a + b, 0) / s.clickDelays.length : 0,
-        avgReachDistance: s.reachDistances.length
-          ? s.reachDistances.reduce((a, b) => a + b, 0) / s.reachDistances.length
-          : 0,
-        hitRate: s.clicks.length ? s.hits / s.clicks.length : 0,
-        timestamp: Date.now(),
-      };
-      onCompleteRef.current(result);
+  const finish = () => {
+    const clicks = s.clickDelays.length;
+    if (clicks === 0) {
+      s.elapsedMs = 0;
+      aim.pause("calibration-idle");
+      return;
     }
+
+    s.finished = true;
+    const totalClickDelay = s.clickDelays.reduce((sum, delay) => sum + delay, 0);
+    onCompleteRef.current({
+      durationMs: s.elapsedMs,
+      clicks,
+      // 未点击的目标与暂停前丢弃的目标不进入速度基线。
+      avgMoveSpeed: (s.completedDistance * 1000) / Math.max(1, totalClickDelay),
+      avgClickDelay: totalClickDelay / clicks,
+      avgReachDistance: s.reachDistances.reduce((sum, distance) => sum + distance, 0) / clicks,
+      hitRate: s.hits / clicks,
+      timestamp: Date.now(),
+    });
   };
 
   const onFrame = (f: FrameData, scene: Scene) => {
     if (s.finished) return;
-    s.elapsedMs += f.dt;
-    maybeFinish();
-    if (s.finished) return;
+    s.elapsedMs = Math.min(CALIBRATION_LIMIT_MS, s.elapsedMs + f.dt);
+    if (s.elapsedMs === CALIBRATION_LIMIT_MS) {
+      finish();
+      return;
+    }
     if (!s.target || !s.targetPos) {
       spawnTarget(f, scene);
       return;
@@ -101,18 +101,16 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     s.moveDist += seg;
     s.prevX = f.x;
     s.prevY = f.y;
-    maybeFinish();
     scene.progress = {
-      done: s.clicks.length,
+      done: s.clickDelays.length,
       total: s.total,
-      label: `${s.clicks.length} / ${s.total}`,
+      label: `${s.clickDelays.length} / ${s.total}`,
     };
   };
 
   const onPointerDown = (x: number, y: number, scene: Scene) => {
     if (s.finished || !s.target || !s.targetPos) return;
     const now = performance.now();
-    s.clicks.push(now);
     const hit = dist(x, y, s.targetPos.x, s.targetPos.y) <= CAL_RADIUS;
     if (hit) s.hits++;
     s.clickDelays.push(now - s.spawnTime);
@@ -122,14 +120,15 @@ export function CalibrationTest({ mode, onComplete }: CalibrationTestProps) {
     s.target = null;
     s.targetPos = null;
     scene.targets = [];
-    maybeFinish();
+    if (s.clickDelays.length >= s.total) finish();
   };
 
   const onReset = () => {
     s.target = null;
     s.targetPos = null;
     s.moveDist = 0;
-    if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
+    aim.sceneRef.current.targets = [];
+    aim.sceneRef.current.progress = undefined;
   };
 
   useActiveTest({ onFrame, onPointerDown, onReset });

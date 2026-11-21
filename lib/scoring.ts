@@ -130,13 +130,18 @@ export interface TrackingScoringInput {
   targetRadius: number;
   seed: number;
   method?: TrackingScoringMethod;
+  coveredTimeMs?: number;
 }
 
 export function computeTrackingScore(input: TrackingScoringInput): TrackingResult {
   const { samples, targetRadius } = input;
   const metrics = trackingMetrics(samples, targetRadius, input.method ?? "time");
   if (!metrics) return emptyTracking(input);
-  const { avgError, medianError, errorStd, coverage, velocityDiffRatio, jitter } = metrics;
+  const { avgError, medianError, errorStd, velocityDiffRatio, jitter } = metrics;
+  const coveredTime = input.coveredTimeMs;
+  const coverage = coveredTime !== undefined && Number.isFinite(coveredTime) && metrics.durationMs > 0
+    ? clamp(coveredTime / metrics.durationMs, 0, 1)
+    : metrics.coverage;
 
   // --- 分项 ---
   // 平均误差：0 → 100 分，1.6×radius → 0 分（线性）
@@ -163,6 +168,7 @@ export function computeTrackingScore(input: TrackingScoringInput): TrackingResul
 
   return {
     ...metrics,
+    coverage,
     sampleCount: samples.length,
     score,
     breakdown: {

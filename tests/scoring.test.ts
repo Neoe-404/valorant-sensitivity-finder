@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mean, median, standardDeviation, clamp, percentile, cv, roundTo, consistencyAcross } from "../lib/statistics";
 import { eDpi, sensitivityMultiplier, pathLength, dist2d } from "../lib/mouse-math";
+import { coveredTrackingMs } from "../lib/tracking-metrics";
 import {
   computeFlickScore,
   computeTrackingScore,
@@ -153,6 +154,13 @@ describe("scoring: flick", () => {
 });
 
 describe("scoring: tracking", () => {
+  it("measures a target passing a stationary cursor between outside endpoints", () => {
+    const start = { t: 0, cursorX: 0, cursorY: 0, targetX: -40, targetY: 0 };
+    const end = { t: 100, cursorX: 200, cursorY: 0, targetX: 40, targetY: 0 };
+    expect(coveredTrackingMs(start, end, 26)).toBeCloseTo(65, 7);
+    expect(coveredTrackingMs({ ...start, targetY: 26 }, { ...end, targetY: 26 }, 26)).toBe(0);
+  });
+
   function linearTrack(times: number[], cursorSpeed = 140): TrackingSample[] {
     return times.map((t) => ({ t, cursorX: t * cursorSpeed / 1000, cursorY: 0, targetX: t * 0.1, targetY: 0 }));
   }

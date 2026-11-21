@@ -3,7 +3,7 @@
 import { useRef } from "react";
 import { useAim, type FrameData, type Scene } from "@/components/aim/AimArena";
 import { computeTrackingScore } from "@/lib/scoring";
-import type { TrackingScoringMethod } from "@/lib/tracking-metrics";
+import { coveredTrackingMs, type TrackingScoringMethod } from "@/lib/tracking-metrics";
 import type { ScenePlan } from "@/lib/test-plan";
 import { TRACKING_RADIUS, configFor, mulberry32 } from "./shared";
 import { useActiveTest } from "@/hooks/useActiveTest";
@@ -14,6 +14,7 @@ interface TrackingTestProps {
   mode: TestMode;
   plan?: ScenePlan;
   scoringMethod?: TrackingScoringMethod;
+  eventCoverage?: boolean;
   onComplete: (result: TrackingResult) => void;
 }
 
@@ -41,9 +42,10 @@ interface TrackParams {
  * 目标沿“正弦叠加 + 漂移”的平滑曲线运动（速度时刻变化，但连续可预测）。
  * 逐帧记录 cursor-target 距离 / 覆盖 / 速度匹配 / 抖动。
  */
-export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }: TrackingTestProps) {
+export function TrackingTest({ mode, onComplete, scoringMethod = "time", eventCoverage = true, plan }: TrackingTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
+  const recordsCoverage = eventCoverage && scoringMethod === "time";
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
@@ -52,6 +54,9 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
     seed: plan?.seed ?? Math.floor(Math.random() * 1e9),
     params: null as TrackParams | null,
     samples: [] as TrackingSample[],
+    startedAt: 0,
+    lastCoverage: null as TrackingSample | null,
+    coveredTimeMs: 0,
     finished: false,
   }).current;
 
@@ -103,6 +108,22 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
     };
   };
 
+  const recordCoverage = (sample: TrackingSample) => {
+    const previous = s.lastCoverage;
+    if (previous) {
+      if (sample.t < previous.t) return;
+      s.coveredTimeMs += coveredTrackingMs(previous, sample, TRACKING_RADIUS);
+    }
+    s.lastCoverage = sample;
+  };
+
+  const onPointerMove = (cursorX: number, cursorY: number, time: number) => {
+    if (!s.params || !s.lastCoverage || s.finished) return;
+    const t = Math.min(s.durationMs, Math.max(s.lastCoverage.t, time - s.startedAt));
+    const target = targetPos(s.params, t / 1000);
+    recordCoverage({ t, cursorX, cursorY, targetX: target.x, targetY: target.y });
+  };
+
   const finish = () => {
     if (s.finished) return;
     s.finished = true;
@@ -120,6 +141,7 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
       targetRadius: TRACKING_RADIUS,
       seed: s.seed,
       method: scoringMethod,
+      coveredTimeMs: recordsCoverage ? s.coveredTimeMs : undefined,
     });
     onCompleteRef.current(result);
   };
@@ -127,6 +149,7 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
   const onFrame = (f: FrameData, scene: Scene) => {
     if (s.finished) return;
     const previous = s.samples.at(-1);
+    if (!previous) s.startedAt = f.now;
     // 第一帧只记录起点，然后按实际测量间隔推进。
     const elapsedMs = previous ? previous.t + f.dt : 0;
     if (scoringMethod === "frames" && elapsedMs >= s.durationMs) {
@@ -145,7 +168,9 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
       cursorX = previous.cursorX + (f.x - previous.cursorX) * fraction;
       cursorY = previous.cursorY + (f.y - previous.cursorY) * fraction;
     }
-    s.samples.push({ t, cursorX, cursorY, targetX: tp.x, targetY: tp.y });
+    const sample = { t, cursorX, cursorY, targetX: tp.x, targetY: tp.y };
+    s.samples.push(sample);
+    if (recordsCoverage) recordCoverage(sample);
     if (t >= s.durationMs) {
       finish();
       return;
@@ -173,13 +198,15 @@ export function TrackingTest({ mode, onComplete, scoringMethod = "time", plan }:
     // 跟踪是一个连续目标；暂停后重做本段，保留同一条轨迹。
     s.samples = [];
     s.params = null;
+    s.lastCoverage = null;
+    s.coveredTimeMs = 0;
     s.finished = false;
     aim.sceneRef.current.targets = [];
     aim.sceneRef.current.trail = [];
     aim.sceneRef.current.progress = undefined;
   };
 
-  useActiveTest({ onFrame, onReset });
+  useActiveTest({ onFrame, onPointerMove: recordsCoverage ? onPointerMove : undefined, onReset });
 
   return null;
 }

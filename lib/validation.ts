@@ -15,7 +15,7 @@ const label = (value: unknown) => typeof value === "string" && ["Low", "Medium",
 const nonNegative = (value: unknown): value is number => number(value) && value >= 0;
 const fraction = (value: unknown) => between(value, 0, 1);
 const progressVersion = (value: unknown): value is TestProgress["version"] =>
-  value === 1 || value === 2 || value === 3 || value === 4 || value === 5 || value === 6;
+  value === 1 || value === 2 || value === 3 || value === 4 || value === 5 || value === 6 || value === 7 || value === 8 || value === 9 || value === 10;
 
 export function parsePlayerSettings(value: unknown): PlayerSettings | null {
   if (!object(value) || !between(value.dpi, 50, 20000) || !Number.isInteger(value.dpi) ||

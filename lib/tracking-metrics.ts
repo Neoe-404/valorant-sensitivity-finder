@@ -23,6 +23,30 @@ interface ErrorInterval {
 
 const MIN_TARGET_SPEED = 8;
 
+/** 输入事件之间准星位置不变，目标在相邻测量点之间按线段估计。 */
+export function coveredTrackingMs(previous: TrackingSample, current: TrackingSample, radius: number): number {
+  const dt = current.t - previous.t;
+  if (dt <= 0) return 0;
+  const x = previous.cursorX - previous.targetX;
+  const y = previous.cursorY - previous.targetY;
+  const dx = previous.targetX - current.targetX;
+  const dy = previous.targetY - current.targetY;
+  const radiusSquared = radius * radius;
+  if (x * x + y * y <= radiusSquared && (x + dx) ** 2 + (y + dy) ** 2 <= radiusSquared) return dt;
+
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return 0;
+  const along = (x * dx + y * dy) / length;
+  const perpendicular = (x * dy - y * dx) / length;
+  const halfChordSquared = radiusSquared - perpendicular * perpendicular;
+  if (halfChordSquared <= 0) return 0;
+
+  const halfChord = Math.sqrt(halfChordSquared);
+  const enter = Math.max(0, (-halfChord - along) / length);
+  const exit = Math.min(1, (halfChord - along) / length);
+  return dt * Math.max(0, exit - enter);
+}
+
 // 在两次测量之间线性估计误差。没有观测到的区间不参与统计。
 function timeWithinError(intervals: ErrorInterval[], threshold: number): number {
   let time = 0;

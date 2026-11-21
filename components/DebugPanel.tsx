@@ -38,7 +38,7 @@ export function DebugPanel() {
   ];
 
   return (
-    <div className="pointer-events-auto fixed bottom-4 right-4 z-[70] w-52 rounded-lg border border-line bg-black/80 p-3 font-mono text-[11px] text-green-400 shadow-2xl">
+    <div ref={aim.registerOverlay} className="pointer-events-none fixed bottom-4 right-4 z-[70] w-52 rounded-lg border border-line bg-black/80 p-3 font-mono text-[11px] text-green-400 shadow-2xl">
       <div className="mb-2 border-b border-line pb-1 text-[10px] uppercase tracking-widest text-dim">
         Debug
       </div>

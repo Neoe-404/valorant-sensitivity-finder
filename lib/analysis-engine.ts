@@ -5,13 +5,13 @@
 
 import { clamp } from "./statistics";
 import { bestMeasuredCandidate } from "./result-record";
-import type { AimProfile, AnalysisItem, CandidateScore, SessionSnapshot } from "@/types";
+import type { AimProfile, AnalysisItem, CalibrationSummary, CandidateScore, SessionSnapshot } from "@/types";
 
 export interface AnalysisInput {
   baseSensitivity: number;
   best: CandidateScore;
   rounds: number;
-  calibration: { avgMoveSpeed: number; avgClickDelay: number } | null;
+  calibration: CalibrationSummary | null;
 }
 
 const OVERSHOOT_THRESHOLD = 0.3;
@@ -37,12 +37,19 @@ function recommendationDirection(base: number, recommended: number): AnalysisIte
 
 /** 从保存的成绩和推荐值生成当前解读，也适用于较早的记录。 */
 export function analyzeResult(snapshot: SessionSnapshot) {
-  const { candidates, settings, rounds, calibration, recommendation } = snapshot;
+  const { candidates, settings, rounds, recommendation } = snapshot;
   const best = bestMeasuredCandidate(candidates);
+  const emptyCalibration = snapshot.calibration?.clicks === 0;
+  const calibration = emptyCalibration ? null : snapshot.calibration;
+  const input = best ? { best, baseSensitivity: settings.baseSensitivity, rounds, calibration } : null;
   return {
     best,
-    analysis: best
-      ? buildAnalysis({ best, baseSensitivity: settings.baseSensitivity, rounds, calibration }, recommendation.sensitivity)
+    calibration,
+    profile: input?.best.metrics && emptyCalibration
+      ? { ...snapshot.profile, speed: buildAimProfile(input).speed }
+      : snapshot.profile,
+    analysis: input
+      ? buildAnalysis(input, recommendation.sensitivity)
       : [recommendationDirection(settings.baseSensitivity, recommendation.sensitivity)],
   };
 }
@@ -64,7 +71,7 @@ export function buildAimProfile(input: AnalysisInput): AimProfile {
   } else if (metrics) {
     speed = 0;
   }
-  if (calibration && calibration.avgMoveSpeed > 0 && metrics && metrics.flickAccuracy > 0) {
+  if (calibration && calibration.clicks > 0 && calibration.avgMoveSpeed > 0 && metrics && metrics.flickAccuracy > 0) {
     const bonus = clamp((calibration.avgMoveSpeed - 600) / 30, -15, 15);
     speed = clamp(speed + bonus, 5, 100);
   }

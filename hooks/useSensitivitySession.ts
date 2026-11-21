@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TestRun, type SceneResult, type TestPositionProgress } from "@/lib/test-run";
 import { buildAimProfile, buildAnalysis } from "@/lib/analysis-engine";
 import { historyRecordFromSnapshot } from "@/lib/result-record";
-import { addHistoryRecord, clearTestProgress, getHistoryRecord, makeId, saveLastSession, saveTestProgress } from "@/lib/storage";
+import {
+  addHistoryRecord, clearTestProgress, getHistoryRecord, makeId, saveLastSession,
+  saveTestProgress, testProgressStatus, watchTestProgress,
+} from "@/lib/storage";
 import type { CalibrationResult, HistoryRecord, PlayerSettings, SessionSnapshot } from "@/types";
 
 type SessionFlowState =
@@ -32,26 +35,45 @@ export function useSensitivitySession(settings: PlayerSettings, initialRun: Test
     setState({ stage: "finalizing" });
   }, []);
 
+  const stopOutdatedRun = useCallback(() => {
+    settledRef.current = true;
+    const id = runRef.current?.progress.id;
+    const completed = id ? getHistoryRecord(id) : null;
+    if (completed) showSavedResult(completed);
+    else setState({ stage: "conflict" });
+  }, [showSavedResult]);
+
+  const checkCurrentProgress = useCallback(() => {
+    if (settledRef.current) return false;
+    if (testProgressStatus(storedProgressRef.current) !== "conflict") return true;
+    stopOutdatedRun();
+    return false;
+  }, [stopOutdatedRun]);
+
+  useEffect(() => {
+    const unsubscribe = watchTestProgress(checkCurrentProgress);
+    checkCurrentProgress();
+    return unsubscribe;
+  }, [checkCurrentProgress]);
+
   const persistProgress = useCallback((run: TestRun) => {
     const progress = run.progress;
     const outcome = saveTestProgress(progress, storedProgressRef.current);
     if (outcome === "conflict") {
-      settledRef.current = true;
-      const completed = getHistoryRecord(progress.id);
-      if (completed) showSavedResult(completed);
-      else setState({ stage: "conflict" });
+      stopOutdatedRun();
       return false;
     }
     if (outcome === "saved") storedProgressRef.current = progress;
     setProgressSaved(outcome === "saved");
     return true;
-  }, [showSavedResult]);
+  }, [stopOutdatedRun]);
 
   const finalize = useCallback((run: TestRun) => {
     if (settledRef.current) return;
     settledRef.current = true;
 
-    const { search, progress: { id, settings, calibration } } = run;
+    const { search, progress: { id, settings, calibration: summary } } = run;
+    const calibration = summary.clicks > 0 ? summary : null;
     const stored = storedProgressRef.current;
     const existing = getHistoryRecord(id);
     if (existing) {
@@ -87,8 +109,8 @@ export function useSensitivitySession(settings: PlayerSettings, initialRun: Test
     };
     const record = historyRecordFromSnapshot(snapshot, best);
 
-    saveLastSession(snapshot);
     const historySaved = addHistoryRecord(record) !== null;
+    if (!historySaved) saveLastSession(snapshot);
     // 保留完整进度，直到结果真正进入历史。
     if (historySaved && stored) clearTestProgress(stored);
     setStorageSaved(historySaved);
@@ -100,9 +122,11 @@ export function useSensitivitySession(settings: PlayerSettings, initialRun: Test
     if (initialRun && !initialRun.position && !settledRef.current && persistProgress(initialRun)) finalize(initialRun);
   }, [initialRun, finalize, persistProgress]);
 
-  const finishCalibration = useCallback((cal: CalibrationResult) => {
+  const finishCalibration = useCallback((cal: CalibrationResult | null) => {
     if (runRef.current || settledRef.current) return;
-    const { avgMoveSpeed, avgClickDelay, hitRate, clicks } = cal;
+    // 保留已有草稿格式，用零点击表示没有校准样本。
+    const { avgMoveSpeed, avgClickDelay, hitRate, clicks } = cal ??
+      { avgMoveSpeed: 0, avgClickDelay: 0, hitRate: 0, clicks: 0 };
     const run = new TestRun(makeId(), settings, { avgMoveSpeed, avgClickDelay, hitRate, clicks });
     runRef.current = run;
     if (persistProgress(run)) setState(stateFor(run));
@@ -119,6 +143,7 @@ export function useSensitivitySession(settings: PlayerSettings, initialRun: Test
     state,
     recordTestResult,
     finishCalibration,
+    checkCurrentProgress,
     finalSnapshot: final?.snapshot ?? null,
     finalHistory: final?.history ?? null,
     storageSaved,

@@ -11,14 +11,30 @@ import { configFor } from "@/components/tests/shared";
 import { DebugPanel } from "@/components/DebugPanel";
 import { ExportResultButton } from "@/components/results/ExportResultButton";
 import { useSensitivitySession } from "@/hooks/useSensitivitySession";
-import { clearTestProgress, loadSettings, loadTestProgress } from "@/lib/storage";
+import {
+  clearTestProgress, getHistoryRecord, loadSettings, loadTestProgress,
+  testProgressStatus, watchTestProgress,
+} from "@/lib/storage";
 import { TestRun, type TestPositionProgress } from "@/lib/test-run";
 import { virtualSensitivityScale, cmPer360, eDpi } from "@/lib/mouse-math";
+import { MIN_ARENA_HEIGHT, MIN_ARENA_WIDTH } from "@/lib/arena-geometry";
 import { Check, Crosshair, Pause, Play, RotateCcw, X } from "lucide-react";
 import type { PlayerSettings } from "@/types";
 
 const TEST_NAMES = ["FLICK TEST", "TRACKING TEST", "MICRO TEST"] as const;
 const TEST_LABELS = ["甩枪", "跟枪", "微调"] as const;
+const RETRY_PROMPTS = {
+  "tracking-idle": {
+    title: "请重试跟枪",
+    text: "本段准星移动过少，成绩未记录。重试时请移动鼠标跟随目标。",
+    action: "重试本段跟枪",
+  },
+  "calibration-idle": {
+    title: "校准未采集到点击",
+    text: "重试时请移动准星并点击目标。也可以跳过校准，直接开始正式测试。",
+    action: "重试校准",
+  },
+};
 
 export default function TestPage() {
   const router = useRouter();
@@ -27,7 +43,7 @@ export default function TestPage() {
   const [discardError, setDiscardError] = useState(false);
   const [mobile, setMobile] = useState(false);
 
-  useEffect(() => {
+  const readEntry = useCallback(() => {
     const settings = loadSettings();
     const progress = loadTestProgress();
     const resume = progress ? TestRun.restore(progress) : null;
@@ -37,7 +53,24 @@ export default function TestPage() {
       return;
     }
     setEntry({ settings, resume });
+    setDiscardError(false);
   }, [router]);
+
+  useEffect(readEntry, [readEntry]);
+
+  const offeredProgress = resumeSelected ? null : entry?.resume?.progress;
+  useEffect(() => {
+    if (!offeredProgress) return;
+    const refresh = () => {
+      if (testProgressStatus(offeredProgress) !== "conflict") return;
+      const completed = getHistoryRecord(offeredProgress.id);
+      if (completed) router.replace(`/results?id=${completed.id}`);
+      else readEntry();
+    };
+    const unsubscribe = watchTestProgress(refresh);
+    refresh();
+    return unsubscribe;
+  }, [offeredProgress, readEntry, router]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -140,6 +173,7 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
   };
 
   if (flow.state.stage === "calibration") {
+    const skipCalibration = () => flow.finishCalibration(null);
     const calScale = virtualSensitivityScale(
       settings.baseSensitivity,
       settings.dpi,
@@ -151,7 +185,9 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
         key={`cal-${epoch}`}
         multiplier={calScale}
         referenceWidth={settings.screenWidth}
+        referenceHeight={settings.screenHeight}
         crosshairColor={settings.crosshairColor}
+        beforeStart={flow.checkCurrentProgress}
         onQuit={() => confirmQuit("/setup")}
       >
         <CalibrationTest mode={settings.mode} onComplete={flow.finishCalibration} />
@@ -166,8 +202,9 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
           title="CALIBRATION"
           description={`先熟悉虚拟准星：它现在按你的真实参数模拟 —— 灵敏度 ${settings.baseSensitivity.toFixed(3)} @ DPI ${settings.dpi}（eDPI ${baseEDpi}，约 ${cmPer360(settings.dpi, settings.baseSensitivity).toFixed(1)} cm/360°）。快速点击随机目标，建立移动与点击基线，不计入正式成绩。`}
           cta="开始校准（锁定鼠标）"
+          onSkipCalibration={skipCalibration}
         />
-        <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/setup")} />
+        <PauseOverlay onRestart={restartTest} onQuit={() => confirmQuit("/setup")} onSkipCalibration={skipCalibration} />
         <DebugPanel />
       </ArenaScreen>
     );
@@ -181,7 +218,9 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
         key={`${s.round}-${s.candidateIndex}-${s.testIndex}-${epoch}`}
         multiplier={s.multiplier}
         referenceWidth={settings.screenWidth}
+        referenceHeight={!initialRun || initialRun.progress.version >= 10 ? settings.screenHeight : undefined}
         crosshairColor={settings.crosshairColor}
+        beforeStart={flow.checkCurrentProgress}
         onQuit={() => confirmQuit("/history")}
       >
         {s.testIndex === 0 && (
@@ -189,6 +228,7 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
             mode={settings.mode}
             plan={s.plan}
             scoringMethod={initialRun && initialRun.progress.version < 5 ? "hits-only" : "all-attempts"}
+            movementSampling={initialRun && initialRun.progress.version < 7 ? "frames" : "events"}
             onComplete={flow.recordTestResult}
           />
         )}
@@ -197,6 +237,7 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
             mode={settings.mode}
             plan={s.plan}
             scoringMethod={initialRun?.progress.version === 1 ? "frames" : "time"}
+            eventCoverage={!initialRun || initialRun.progress.version >= 9}
             onComplete={flow.recordTestResult}
           />
         )}
@@ -204,7 +245,9 @@ function ActiveSession({ settings, initialRun }: { settings: PlayerSettings; ini
           <MicroAdjustmentTest
             mode={settings.mode}
             plan={s.plan}
-            timeWeighted={!initialRun || initialRun.progress.version >= 4}
+            holdSampling={!initialRun || initialRun.progress.version >= 8
+              ? "events"
+              : initialRun.progress.version >= 4 ? "time-weighted" : "frames"}
             onComplete={flow.recordTestResult}
           />
         )}
@@ -309,21 +352,41 @@ function RoundProgress({ position }: { position: TestPositionProgress }) {
 function ArenaScreen({
   multiplier,
   referenceWidth,
+  referenceHeight,
   crosshairColor,
+  beforeStart,
   onQuit,
   children,
 }: {
   multiplier: number;
   referenceWidth: number;
+  referenceHeight?: number;
   crosshairColor: string;
+  beforeStart: () => boolean;
   onQuit: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <AimArena multiplier={multiplier} referenceWidth={referenceWidth} crosshairColor={crosshairColor}>
+    <AimArena multiplier={multiplier} referenceWidth={referenceWidth} referenceHeight={referenceHeight} crosshairColor={crosshairColor} beforeStart={beforeStart}>
       {children}
+      <ArenaSizeNotice />
       <ExitTestButton onQuit={onQuit} />
     </AimArena>
+  );
+}
+
+function ArenaSizeNotice() {
+  const { arenaSize } = useAim();
+  if (arenaSize !== "too-small") return null;
+  return (
+    <div className="absolute inset-0 z-[70] overflow-y-auto bg-void px-4 pb-4 pt-16 sm:px-8">
+      <div className="mx-auto max-w-md" role="status">
+        <h2 className="text-lg font-bold text-warn">测试区域太小</h2>
+        <p className="mt-2 text-sm text-dim">
+          浏览器窗口至少需要 {MIN_ARENA_WIDTH} × {MIN_ARENA_HEIGHT} 像素。请放大窗口或调小网页缩放。
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -358,7 +421,7 @@ function TopHud({
   eDpi: number;
   progressLabel?: string;
 }) {
-  const { phase, sceneRef } = useAim();
+  const { phase, sceneRef, registerOverlay } = useAim();
   const [progress, setProgress] = useState("");
 
   useEffect(() => {
@@ -373,17 +436,17 @@ function TopHud({
   if (phase !== "running") return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-[60] flex items-start justify-between p-4 sm:p-5">
-      <div className="glass rounded-lg px-4 py-3">
-        <div className="font-mono text-xs font-bold uppercase tracking-[0.25em] text-accent">{title}</div>
-        <div className="mt-0.5 text-xs text-dim">{subtitle}</div>
-        <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-good">
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-[60] flex items-start justify-between gap-2 p-2 sm:p-5">
+      <div ref={registerOverlay} className="glass rounded-lg px-2 py-1 sm:px-4 sm:py-3">
+        <div className="font-mono text-xs font-bold uppercase text-accent sm:tracking-[0.25em]">{title}</div>
+        <div className="mt-0.5 hidden text-xs text-dim sm:block">{subtitle}</div>
+        <div className="mt-0.5 flex items-center gap-3 font-mono text-[11px] text-good sm:mt-2">
           <span>{progressLabel} {progress || "—"}</span>
         </div>
       </div>
-      <div className="glass rounded-lg px-4 py-3 text-right">
-        <div className="font-mono text-xs uppercase tracking-widest text-dim">{round}</div>
-        <div className="font-mono text-xl font-bold text-fg">
+      <div ref={registerOverlay} className="glass rounded-lg px-2 py-1 text-right sm:px-4 sm:py-3">
+        <div className="hidden font-mono text-xs uppercase tracking-widest text-dim sm:block">{round}</div>
+        <div className="font-mono text-sm font-bold text-fg sm:text-xl">
           {candidate}
           <span className="ml-2 text-[11px] font-normal text-dim">eDPI {eDpi}</span>
         </div>
@@ -400,6 +463,7 @@ function ReadyOverlay({
   progressSaved,
   hint,
   position,
+  onSkipCalibration,
 }: {
   title: string;
   description: string;
@@ -407,9 +471,10 @@ function ReadyOverlay({
   progressSaved?: boolean | null;
   hint?: string;
   position?: TestPositionProgress;
+  onSkipCalibration?: () => void;
 }) {
   const aim = useAim();
-  if (aim.phase !== "idle") return null;
+  if (aim.phase !== "idle" || aim.arenaSize !== "ready") return null;
 
   return (
     <div className="absolute inset-0 z-[65] flex items-center justify-center bg-void/70">
@@ -424,6 +489,7 @@ function ReadyOverlay({
         <button className="btn-primary mt-6 w-full" onClick={aim.requestLockAndStart} autoFocus>
           {cta}
         </button>
+        {onSkipCalibration ? <button className="btn-ghost mt-2 w-full" onClick={onSkipCalibration}>跳过校准</button> : null}
         <p className="mt-3 text-[11px] text-dim/70">测试期间将锁定鼠标指针，按 ESC 可暂停</p>
         {progressSaved === false ? <ProgressSaveNotice /> : null}
       </div>
@@ -437,16 +503,18 @@ function PauseOverlay({
   onQuit,
   progressSaved,
   position,
+  onSkipCalibration,
 }: {
   onRestart: () => void;
   onQuit: () => void;
   progressSaved?: boolean | null;
   position?: TestPositionProgress;
+  onSkipCalibration?: () => void;
 }) {
   const aim = useAim();
-  if (aim.phase !== "paused") return null;
+  if (aim.phase !== "paused" || aim.arenaSize !== "ready") return null;
   const { restartRequired } = aim;
-  const retryTracking = aim.pauseReason === "tracking-idle";
+  const retry = aim.pauseReason ? RETRY_PROMPTS[aim.pauseReason] : null;
 
   return (
     <div className="absolute inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -454,27 +522,28 @@ function PauseOverlay({
         <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full border border-warn/40 bg-warn/10">
           <Pause size={20} className="text-warn" />
         </div>
-        <h2 className="text-xl font-bold">{restartRequired ? "测试区域已改变" : retryTracking ? "请重试跟枪" : "测试已暂停"}</h2>
+        <h2 className="text-xl font-bold">{restartRequired ? "测试区域已改变" : retry?.title ?? "测试已暂停"}</h2>
         <p className="mt-2 text-sm text-dim">
           {restartRequired
             ? "请在新尺寸下重做当前项目。之前完成的项目会保留。"
-            : retryTracking
-              ? "本段准星移动过少，成绩未记录。重试时请移动鼠标跟随目标。"
-              : "暂停时间不计分。恢复时重做当前目标，跟枪会从本段起点开始。"}
+            : retry?.text ?? (onSkipCalibration
+              ? "暂停时间不计入校准。恢复时会换一个目标。"
+              : "暂停时间不计分。恢复时重做当前目标，跟枪会从本段起点开始。")}
         </p>
         {position ? <div className="mt-4"><RoundProgress position={position} /></div> : null}
         {progressSaved === false ? <ProgressSaveNotice /> : null}
         <div className="mt-6 grid gap-2.5">
           {!restartRequired ? (
             <button className="btn-primary" onClick={aim.resume} autoFocus>
-              <Play size={16} /> {retryTracking ? "重试本段跟枪" : "恢复测试"}
+              <Play size={16} /> {retry?.action ?? "恢复测试"}
             </button>
           ) : null}
-          {restartRequired || !retryTracking ? (
+          {restartRequired || !retry ? (
             <button className={restartRequired ? "btn-primary" : "btn-ghost"} onClick={onRestart} autoFocus={restartRequired}>
               <RotateCcw size={16} /> 重做当前项目
             </button>
           ) : null}
+          {onSkipCalibration ? <button className="btn-ghost" onClick={onSkipCalibration}>跳过校准</button> : null}
           <button className="text-xs text-dim hover:text-accent" onClick={onQuit}>
             退出测试
           </button>

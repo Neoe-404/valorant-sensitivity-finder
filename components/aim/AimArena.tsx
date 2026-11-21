@@ -10,7 +10,8 @@ import React, {
   useState,
 } from "react";
 import { usePointerLock } from "@/hooks/usePointerLock";
-import { useMouseTracking } from "@/hooks/useMouseTracking";
+import { inputEventTime, useMouseTracking } from "@/hooks/useMouseTracking";
+import { arenaLayout, circleTouchesRect, isArenaPlayable } from "@/lib/arena-geometry";
 import { drawCrosshair, CROSSHAIR_DEFAULTS } from "./VirtualCrosshair";
 import { drawTarget, type SceneTarget } from "./Target";
 
@@ -58,16 +59,19 @@ export interface FrameData {
 
 export interface ActiveTestApi {
   onFrame: (f: FrameData, scene: Scene) => void;
-  onPointerDown?: (x: number, y: number, scene: Scene) => void;
+  onPointerMove?: (x: number, y: number, time: number) => void;
+  onPointerDown?: (x: number, y: number, scene: Scene, time?: number) => void;
   /** 暂停恢复后丢弃当前目标的部分数据 */
   onReset?: () => void;
 }
 
 export type ArenaPhase = "idle" | "running" | "paused";
-type ArenaPauseReason = "tracking-idle";
+type ArenaPauseReason = "tracking-idle" | "calibration-idle";
+type ArenaSize = "measuring" | "too-small" | "ready";
 
 export interface AimContextValue {
   phase: ArenaPhase;
+  arenaSize: ArenaSize;
   pauseReason: ArenaPauseReason | null;
   restartRequired: boolean;
   locked: boolean;
@@ -77,6 +81,7 @@ export interface AimContextValue {
   resume: () => void;
   pause: (reason?: ArenaPauseReason) => void;
   registerActive: (api: ActiveTestApi | null) => void;
+  registerOverlay: React.RefCallback<HTMLDivElement>;
   getCursor: () => { x: number; y: number };
   readDebug: () => DebugInfo;
   lockedRef: React.MutableRefObject<boolean>;
@@ -100,6 +105,13 @@ export interface DebugInfo {
 
 const AimContext = createContext<AimContextValue | null>(null);
 const MAX_FRAME_GAP_MS = 300;
+const OVERLAY_REVEAL_DELAY_MS = 160;
+const CROSSHAIR_CLEARANCE = CROSSHAIR_DEFAULTS.gap + CROSSHAIR_DEFAULTS.length + CROSSHAIR_DEFAULTS.thickness;
+
+function moveCursor(cursor: { x: number; y: number }, dx: number, dy: number, w: number, h: number) {
+  cursor.x = Math.max(0, Math.min(w, cursor.x + dx));
+  cursor.y = Math.max(0, Math.min(h, cursor.y + dy));
+}
 
 export function useAim(): AimContextValue {
   const v = useContext(AimContext);
@@ -110,10 +122,13 @@ export function useAim(): AimContextValue {
 export interface AimArenaProps {
   multiplier: number;
   referenceWidth: number;
+  /** 有高度时固定会话内的计分尺寸，并等比适配窗口。 */
+  referenceHeight?: number;
   crosshairColor?: string;
   /** 覆盖层（HUD、暂停、顶部信息等） */
   children?: React.ReactNode;
   onPhaseChange?: (phase: ArenaPhase) => void;
+  beforeStart?: () => boolean;
 }
 
 /**
@@ -123,13 +138,14 @@ export interface AimArenaProps {
  * - 运行时用 requestAnimationFrame 采样和绘制，等待或暂停时按需绘制
  * - 窗口失焦 / 指针锁释放 → 自动暂停，避免记录无效数据
  */
-export function AimArena({ multiplier, referenceWidth, crosshairColor, children, onPhaseChange }: AimArenaProps) {
+export function AimArena({ multiplier, referenceWidth, referenceHeight, crosshairColor, children, onPhaseChange, beforeStart }: AimArenaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { locked, lockedRef, rawInput, requestLock, exitLock, ownsLock } = usePointerLock(containerRef);
   const { pendingRef, handleMove, flush } = useMouseTracking();
 
   const [phase, setPhase] = useState<ArenaPhase>("idle");
+  const [arenaSize, setArenaSize] = useState<ArenaSize>("measuring");
   const [pauseReason, setPauseReason] = useState<ArenaPauseReason | null>(null);
   const phaseRef = useRef<ArenaPhase>("idle");
   const [lockError, setLockError] = useState(false);
@@ -161,9 +177,27 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
     fps: 60,
   });
   const lastRawRef = useRef({ dx: 0, dy: 0 });
-  const sizeRef = useRef({ w: 0, h: 0, dpr: 1, pixelRatio: 0 });
+  const sizeRef = useRef({ ...arenaLayout(0, 0), viewWidth: 0, viewHeight: 0, dpr: 1, pixelRatio: 0 });
+  const measureSizeRef = useRef<(() => void) | null>(null);
   const paintStillRef = useRef<(() => void) | null>(null);
   const lastSampleAtRef = useRef<number | null>(null);
+  const overlaysRef = useRef(new Map<HTMLDivElement, { bounds: DOMRectReadOnly; revealAt: number }>());
+
+  const registerOverlay = useCallback<React.RefCallback<HTMLDivElement>>((element) => {
+    if (!element) return;
+    const overlay = { bounds: element.getBoundingClientRect(), revealAt: 0 };
+    overlaysRef.current.set(element, overlay);
+    // 缓存面板位置。采样帧直接比较几何数据，避免逐帧读取 DOM 布局。
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(() => {
+      overlay.bounds = element.getBoundingClientRect();
+    }) : null;
+    observer?.observe(element);
+    return () => {
+      observer?.disconnect();
+      overlaysRef.current.delete(element);
+      element.style.removeProperty("visibility");
+    };
+  }, []);
 
   const advanceCursor = useCallback(() => {
     const { w, h } = sizeRef.current;
@@ -171,16 +205,29 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
     const scale = multiplier * w / Math.max(1, referenceWidth);
     const dx = raw.dx * scale;
     const dy = raw.dy * scale;
-    lastRawRef.current = raw;
+    lastRawRef.current = { dx: raw.dx, dy: raw.dy };
     const cursor = cursorRef.current;
-    cursor.x = Math.max(0, Math.min(w, cursor.x + dx));
-    cursor.y = Math.max(0, Math.min(h, cursor.y + dy));
+    const onMove = activeRef.current?.onPointerMove;
+    if (onMove && raw.samples) {
+      for (const sample of raw.samples) {
+        moveCursor(cursor, sample.dx * scale, sample.dy * scale, w, h);
+        onMove(cursor.x, cursor.y, sample.time);
+      }
+    } else {
+      moveCursor(cursor, dx, dy, w, h);
+    }
     return { dx, dy };
   }, [flush, multiplier, referenceWidth]);
 
   const canSample = useCallback(() =>
     phaseRef.current === "running" && lockedRef.current && ownsLock(),
   [lockedRef, ownsLock]);
+
+  const updateResolution = useCallback(() => {
+    if ((window.devicePixelRatio || 1) === sizeRef.current.pixelRatio) return false;
+    measureSizeRef.current?.();
+    return true;
+  }, []);
 
   const pause = useCallback((reason?: ArenaPauseReason) => {
     if (phaseRef.current !== "running") {
@@ -206,10 +253,14 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
     const host = containerRef.current;
     if (!cv || !host) return;
     const resize = () => {
-      const { width: w, height: h } = host.getBoundingClientRect();
+      const { width: viewWidth, height: viewHeight } = host.getBoundingClientRect();
       const pixelRatio = window.devicePixelRatio || 1;
+      const layout = arenaLayout(viewWidth, viewHeight, referenceHeight === undefined
+        ? undefined
+        : { w: referenceWidth, h: referenceHeight });
       const previous = sizeRef.current;
-      if (previous.w === w && previous.h === h && previous.pixelRatio === pixelRatio) return;
+      if (previous.viewWidth === viewWidth && previous.viewHeight === viewHeight &&
+        previous.pixelRatio === pixelRatio && previous.w === layout.w && previous.h === layout.h) return;
 
       const measured = previous.pixelRatio > 0;
       if (measured && startingRef.current !== null) pause();
@@ -221,12 +272,18 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         sceneRef.current = { targets: [], trail: [] };
       }
       const dpr = Math.min(pixelRatio, 2);
-      sizeRef.current = { w, h, dpr, pixelRatio };
-      cv.width = Math.round(w * dpr);
-      cv.height = Math.round(h * dpr);
-      cv.style.width = `${w}px`;
-      cv.style.height = `${h}px`;
-      cursorRef.current = { x: w / 2, y: h / 2 };
+      sizeRef.current = { ...layout, viewWidth, viewHeight, dpr, pixelRatio };
+      setArenaSize(isArenaPlayable(viewWidth, viewHeight) ? "ready" : "too-small");
+      cv.width = Math.round(layout.displayWidth * dpr);
+      cv.height = Math.round(layout.displayHeight * dpr);
+      cv.style.width = `${layout.displayWidth}px`;
+      cv.style.height = `${layout.displayHeight}px`;
+      cv.style.left = `${layout.left}px`;
+      cv.style.top = `${layout.top}px`;
+      cursorRef.current = { x: layout.w / 2, y: layout.h / 2 };
+      for (const [element, overlay] of overlaysRef.current) {
+        overlay.bounds = element.getBoundingClientRect();
+      }
       if (phaseRef.current !== "running") paintStillRef.current?.();
     };
 
@@ -239,17 +296,21 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       resize();
     };
 
+    measureSizeRef.current = resize;
     resize();
     resolution.addEventListener("change", onResolutionChange);
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
     observer?.observe(host);
     window.addEventListener("resize", resize);
+    window.addEventListener("focus", resize);
     return () => {
+      measureSizeRef.current = null;
       window.removeEventListener("resize", resize);
+      window.removeEventListener("focus", resize);
       resolution.removeEventListener("change", onResolutionChange);
       observer?.disconnect();
     };
-  }, [pause]);
+  }, [pause, referenceWidth, referenceHeight]);
 
   // 失去指针锁后禁止采样。
   useEffect(() => {
@@ -286,11 +347,11 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   // 鼠标事件
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
-      if (e.pointerType === "mouse" && canSample()) handleMove(e);
+      if (e.pointerType === "mouse" && canSample()) handleMove(e, activeRef.current?.onPointerMove !== undefined);
     };
     const onDown = (e: MouseEvent) => {
       const onClick = activeRef.current?.onPointerDown;
-      if (e.button !== 0 || !onClick || !canSample()) return;
+      if (e.button !== 0 || !onClick || !canSample() || updateResolution()) return;
       const lastSampleAt = lastSampleAtRef.current;
       if (lastSampleAt !== null && performance.now() - lastSampleAt >= MAX_FRAME_GAP_MS) {
         pause();
@@ -299,7 +360,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       // 先应用本帧尚未绘制的位移，按点击时的准星位置判定。
       advanceCursor();
       const { x, y } = cursorRef.current;
-      onClick(x, y, sceneRef.current);
+      onClick(x, y, sceneRef.current, inputEventTime(e));
       e.preventDefault();
     };
     document.addEventListener("pointermove", onMove);
@@ -308,7 +369,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("mousedown", onDown);
     };
-  }, [advanceCursor, canSample, handleMove, pause]);
+  }, [advanceCursor, canSample, handleMove, pause, updateResolution]);
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, w: number, h: number, now: number, running: boolean) => {
@@ -423,9 +484,25 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
     let fps = 60;
 
     const paint = (now: number, running: boolean) => {
-      const { w, h, dpr } = sizeRef.current;
+      const { w, h, scale, left, top } = sizeRef.current;
+      if (!w || !h || !cv.width || !cv.height) return;
+      const cursor = cursorRef.current;
+      const targets = sceneRef.current.targets;
+      for (const [element, overlay] of overlaysRef.current) {
+        const { bounds } = overlay;
+        if (!running) {
+          overlay.revealAt = 0;
+        } else if (
+          circleTouchesRect(left + cursor.x * scale, top + cursor.y * scale, CROSSHAIR_CLEARANCE * scale, bounds) ||
+          targets.some(({ x, y, r }) => circleTouchesRect(left + x * scale, top + y * scale, (r + 2) * scale, bounds))
+        ) {
+          overlay.revealAt = now + OVERLAY_REVEAL_DELAY_MS;
+        }
+        const visibility = now < overlay.revealAt ? "hidden" : "";
+        if (element.style.visibility !== visibility) element.style.visibility = visibility;
+      }
       ctx.save();
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.setTransform(cv.width / w, 0, 0, cv.height / h, 0, 0);
       draw(ctx, w, h, now, running);
       ctx.restore();
     };
@@ -439,6 +516,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         pause();
         return;
       }
+      if (updateResolution()) return;
 
       fpsFrames++;
       if (now - fpsT >= 1000) {
@@ -476,10 +554,18 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       if (raf !== null) cancelAnimationFrame(raf);
       paintStillRef.current = null;
     };
-  }, [advanceCursor, canSample, draw, locked, pause, phase]);
+  }, [advanceCursor, canSample, draw, locked, pause, phase, updateResolution]);
 
   const requestLockAndStart = useCallback(() => {
-    if (startingRef.current !== null || restartRequiredRef.current) return;
+    const canStart = () => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      const { viewWidth, viewHeight, pixelRatio } = sizeRef.current;
+      return !restartRequiredRef.current && rect?.width === viewWidth && rect.height === viewHeight &&
+        pixelRatio === (window.devicePixelRatio || 1) && isArenaPlayable(viewWidth, viewHeight);
+    };
+    if (startingRef.current !== null) return;
+    measureSizeRef.current?.();
+    if (!canStart() || beforeStart?.() === false) return;
     const attempt = Symbol();
     startingRef.current = attempt;
     setLockError(false);
@@ -487,8 +573,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       const ok = await requestLock();
       if (startingRef.current !== attempt) return;
       startingRef.current = null;
-      if (!containerRef.current) return;
-      if (restartRequiredRef.current) {
+      if (!canStart() || (ok && beforeStart?.() === false)) {
         if (ok) exitLock();
         return;
       }
@@ -504,7 +589,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         setLockError(true);
       }
     })();
-  }, [requestLock, flush, setPhaseSafe, exitLock, ownsLock]);
+  }, [requestLock, flush, setPhaseSafe, exitLock, ownsLock, beforeStart]);
 
   const resume = requestLockAndStart;
 
@@ -534,6 +619,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
   const value = useMemo<AimContextValue>(
     () => ({
       phase,
+      arenaSize,
       pauseReason,
       restartRequired,
       locked,
@@ -543,6 +629,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       resume,
       pause,
       registerActive,
+      registerOverlay,
       getCursor,
       readDebug,
       lockedRef,
@@ -551,7 +638,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
       frameRef,
       pendingRef,
     }),
-    [phase, pauseReason, restartRequired, locked, multiplier, crosshairColor, requestLockAndStart, resume, pause, registerActive, getCursor, readDebug, lockedRef, pendingRef]
+    [phase, arenaSize, pauseReason, restartRequired, locked, multiplier, crosshairColor, requestLockAndStart, resume, pause, registerActive, registerOverlay, getCursor, readDebug, lockedRef, pendingRef]
   );
 
   return (
@@ -561,7 +648,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
         className="fixed inset-0 z-50 overflow-hidden bg-void select-none"
         style={{ touchAction: "none" }}
       >
-        <canvas ref={canvasRef} className="absolute inset-0" aria-label="瞄准测试区域" />
+        <canvas ref={canvasRef} className="absolute" aria-label="瞄准测试区域" />
         {lockError ? (
           <div className="pointer-events-none absolute inset-x-0 top-24 z-[80] flex justify-center px-4">
             <div className="max-w-md rounded-xl border border-warn/50 bg-black/85 px-5 py-4 text-center text-sm text-warn shadow-2xl backdrop-blur-sm">
@@ -574,7 +661,7 @@ export function AimArena({ multiplier, referenceWidth, crosshairColor, children,
           </div>
         ) : locked && !rawInput ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-6 z-[80] flex justify-center px-4">
-            <div className="rounded-lg border border-warn/50 bg-black/80 px-4 py-2 text-center text-xs text-warn shadow-xl">
+            <div ref={registerOverlay} className="rounded-lg border border-warn/50 bg-black/80 px-4 py-2 text-center text-xs text-warn shadow-xl">
               当前使用普通鼠标锁定，系统指针加速可能影响手感与结果准确性。
             </div>
           </div>

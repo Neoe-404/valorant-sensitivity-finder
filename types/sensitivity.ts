@@ -20,8 +20,8 @@ export type RecordedTest = { sensitivity: number } & (
 );
 
 export interface TestProgress {
-  /** 2 起跟枪按时间计分，3 起匹配难度，4 起微调按时间计分，5 起甩枪计入未命中，6 起按连续区域推荐。 */
-  version: 1 | 2 | 3 | 4 | 5 | 6;
+  /** 2 起跟枪按时间计分，3 起匹配难度，4 起微调按时间计分，5 起甩枪计入未命中，6 起按连续区域推荐，7 起甩枪、8 起微调、9 起跟枪覆盖率按事件采样，10 起固定测试坐标。 */
+  version: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
   id: string;
   settings: PlayerSettings;
   calibration: CalibrationSummary;

@@ -164,11 +164,11 @@ export interface MicroResult {
 export interface CalibrationResult {
   durationMs: number;
   clicks: number;
-  /** 平均移动速度 px/s */
+  /** 已点击目标的累计移动距离 / 累计点击延迟，单位 px/s */
   avgMoveSpeed: number;
   /** 平均点击延迟 ms（目标出现 -> 点击） */
   avgClickDelay: number;
-  /** 平均从屏幕中心出发到达目标的距离 px（玩家活动范围） */
+  /** 点击过的目标与各自起始准星的平均距离 px */
   avgReachDistance: number;
   hitRate: number;
   timestamp: number;

@@ -36,9 +36,11 @@ interface MatchedSpawnOptions {
 /** 同尺寸画布下，各候选按相同距离组合测试；边缘只改变方向。 */
 export function matchedSpawnPoint(options: MatchedSpawnOptions): { x: number; y: number } {
   const { w, h, fromX, fromY, targetRadius, targetIndex, kind, plan } = options;
+  // 内边距至少容纳完整目标和圆环描边。
+  const targetEdge = targetRadius + 1;
   const insetX = Math.min(targetRadius + 16, w * 0.2);
-  const insetBottom = Math.min(targetRadius + 16, h * 0.2);
-  const top = Math.min(120, h * 0.2);
+  const insetBottom = Math.min(targetRadius + 16, Math.max(targetEdge, h * 0.2));
+  const top = Math.max(targetEdge, Math.min(120, h * 0.2));
   const left = insetX;
   const right = w - insetX;
   const bottom = h - insetBottom;

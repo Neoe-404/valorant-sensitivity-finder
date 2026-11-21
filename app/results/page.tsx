@@ -74,8 +74,8 @@ function ResultsContent() {
     );
   }
 
-  const { recommendation: rec, profile, candidates, calibration, settings } = snapshot;
-  const { best, analysis } = analyzeResult(snapshot);
+  const { recommendation: rec, candidates, settings } = snapshot;
+  const { best, analysis, calibration, profile } = analyzeResult(snapshot);
   const recommendationTested = candidates.some((c) =>
     c.finished && c.overallScore !== null && c.sensitivity === rec.sensitivity
   );
@@ -100,7 +100,7 @@ function ResultsContent() {
             经过 {snapshot.rounds} 轮搜索、{candidates.length} 个候选灵敏度
           </p>
         </div>
-        <ExportResultButton key={snapshot.id} snapshot={{ ...snapshot, analysis }} />
+        <ExportResultButton key={snapshot.id} snapshot={{ ...snapshot, analysis, calibration, profile }} />
       </header>
 
       {/* 推荐 */}
@@ -133,7 +133,10 @@ function ResultsContent() {
       <section className="mt-8 grid gap-4 lg:grid-cols-2">
         <div className="panel p-6">
           <h2 className="mb-2 text-lg font-semibold">瞄准画像</h2>
-          <p className="mb-4 text-xs text-dim">六维瞄准画像（0~100）{best ? `，基于灵敏度 ${best.sensitivity.toFixed(3)} 的实测成绩` : ""}</p>
+          <p className="mb-4 text-xs text-dim">
+            六维瞄准画像（0~100）{best ? `，基于灵敏度 ${best.sensitivity.toFixed(3)} 的实测成绩` : ""}
+            {calibration ? "" : "。本次无校准数据。"}
+          </p>
           <AimProfileChart profile={profile} />
         </div>
 

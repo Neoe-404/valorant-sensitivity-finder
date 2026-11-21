@@ -3,6 +3,7 @@ import {
   saveSettings,
   loadSettings,
   addHistoryRecord,
+  saveHistory,
   loadHistory as getHistory,
   deleteHistoryRecord,
   clearHistory,
@@ -172,6 +173,61 @@ describe("storage: history", () => {
     expect(loadLastSession()).toBeNull();
   });
 
+  it("removes a result held in memory without deleting a different saved snapshot", () => {
+    const saved = fakeSnapshot("disk", 0.42);
+    const record = fakeRecord("pending");
+    addHistoryRecord(record);
+    saveLastSession(saved);
+    const write = window.localStorage.setItem;
+    window.localStorage.setItem = () => { throw new DOMException("Full", "QuotaExceededError"); };
+    expect(saveLastSession(record.snapshot)).toBe(false);
+    window.localStorage.setItem = write;
+
+    expect(deleteHistoryRecord(record.id)).toEqual([]);
+    expect(getSessionForResults(record.id)).toBeNull();
+    expect(getSessionForResults(saved.id)).toEqual(saved);
+  });
+
+  it("removes a saved result without deleting a different result held in memory", () => {
+    const record = fakeRecord("disk");
+    const pending = fakeSnapshot("pending", 0.42);
+    addHistoryRecord(record);
+    saveLastSession(record.snapshot);
+    const write = window.localStorage.setItem;
+    window.localStorage.setItem = () => { throw new DOMException("Full", "QuotaExceededError"); };
+    expect(saveLastSession(pending)).toBe(false);
+    window.localStorage.setItem = write;
+
+    expect(deleteHistoryRecord(record.id)).toEqual([]);
+    expect(store.has("vsf:lastSession:v1")).toBe(false);
+    expect(getSessionForResults(pending.id)).toEqual(pending);
+  });
+
+  it.each([
+    ["deletion", () => deleteHistoryRecord("keep")],
+    ["clearing", clearHistory],
+  ] as const)("keeps the fallback result when %s cannot write history", (_name, remove) => {
+    const record = fakeRecord("keep");
+    addHistoryRecord(record);
+    saveLastSession(record.snapshot);
+    window.localStorage.setItem = () => { throw new DOMException("Blocked", "SecurityError"); };
+
+    expect(remove()).toBeNull();
+    expect(getHistory()).toEqual([record]);
+    expect(loadLastSession()).toEqual(record.snapshot);
+  });
+
+  it("restores history when the matching saved snapshot cannot be removed", () => {
+    const record = fakeRecord("keep");
+    addHistoryRecord(record);
+    saveLastSession(record.snapshot);
+    window.localStorage.removeItem = () => { throw new DOMException("Blocked", "SecurityError"); };
+
+    expect(deleteHistoryRecord(record.id)).toBeNull();
+    expect(getHistory()).toEqual([record]);
+    expect(loadLastSession()).toEqual(record.snapshot);
+  });
+
   it("preserves the result in memory but reports failure when storage is full", () => {
     window.localStorage.setItem = () => { throw new Error("QuotaExceededError"); };
     const record = fakeRecord("unsaved");
@@ -187,6 +243,38 @@ describe("storage: history", () => {
     addHistoryRecord(fakeRecord("b"));
     const hist = getHistory();
     expect(hist.map((r) => r.id)).toEqual(["b", "a"]);
+  });
+
+  it("returns the actual saved history when the quota requires trimming older records", () => {
+    const oldest = fakeRecord("oldest");
+    const previous = fakeRecord("previous");
+    const newest = fakeRecord("newest");
+    addHistoryRecord(oldest);
+    addHistoryRecord(previous);
+    const write = window.localStorage.setItem;
+    window.localStorage.setItem = (key, value) => {
+      if (key === "vsf:history:v1" && JSON.parse(value).length > 2) {
+        throw new DOMException("Full", "QuotaExceededError");
+      }
+      write(key, value);
+    };
+
+    expect(addHistoryRecord(newest)).toEqual([newest, previous]);
+    expect(getHistory()).toEqual([newest, previous]);
+  });
+
+  it("does not replace existing history when reading it fails", () => {
+    const key = "vsf:history:v1";
+    addHistoryRecord(fakeRecord("keep"));
+    const original = store.get(key);
+    const read = window.localStorage.getItem;
+    window.localStorage.getItem = (name) => {
+      if (name === key) throw new DOMException("Blocked", "SecurityError");
+      return read(name);
+    };
+
+    expect(addHistoryRecord(fakeRecord("new"))).toBeNull();
+    expect(store.get(key)).toBe(original);
   });
 
   it("deduplicates by id", () => {
@@ -331,6 +419,34 @@ describe("storage: restoring a history backup", () => {
 });
 
 describe("storage: last session & id", () => {
+  it("opens both the pending and persisted result by ID after a failed write", () => {
+    const saved = fakeSnapshot("saved", 0.41);
+    const pending = { ...fakeSnapshot("pending", 0.35), createdAt: saved.createdAt + 10 };
+    saveLastSession(saved);
+    window.localStorage.setItem = () => { throw new DOMException("Full", "QuotaExceededError"); };
+    expect(saveLastSession(pending)).toBe(false);
+
+    expect(getSessionForResults(saved.id)).toEqual(saved);
+    expect(getSessionForResults(pending.id)).toEqual(pending);
+    expect(getSessionForResults(null)).toEqual(pending);
+
+    const newer = { ...fakeSnapshot("newer", 0.5), createdAt: pending.createdAt + 10 };
+    store.set("vsf:lastSession:v1", JSON.stringify(newer));
+    expect(getSessionForResults(null)).toEqual(newer);
+    expect(getSessionForResults(pending.id)).toEqual(pending);
+  });
+
+  it("preserves a unique fallback and still returns a newer history result without an ID", () => {
+    const legacy = fakeSnapshot("legacy", 0.41);
+    const newer = { ...fakeSnapshot("in-history", 0.35), createdAt: legacy.createdAt + 10 };
+    saveLastSession(legacy);
+    const record = { ...fakeRecord(newer.id), snapshot: newer };
+    expect(addHistoryRecord(record)).not.toBeNull();
+
+    expect(getSessionForResults(legacy.id)).toEqual(legacy);
+    expect(getSessionForResults(null)).toEqual(newer);
+  });
+
   it("only falls back to the latest result when IDs match or no ID was requested", () => {
     const snap = fakeSnapshot("latest", 0.42);
     saveLastSession(snap);
@@ -412,6 +528,86 @@ describe("storage: unfinished test progress", () => {
     expect(loadTestProgress()).toEqual(next);
   });
 
+  it.each([
+    ["deleting the result", () => deleteHistoryRecord(initial.id)],
+    ["clearing history", clearHistory],
+    ["replacing history", () => saveHistory([]) ? [] : null],
+  ] as const)("does not restore a previously saved test after %s", (_name, remove) => {
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(fakeRecord(initial.id));
+    expect(loadTestProgress()).toBeNull();
+
+    expect(remove()).toEqual([]);
+    expect(loadTestProgress()).toBeNull();
+    expect(saveTestProgress({ ...initial, id: "next-test" }, null)).toBe("saved");
+  });
+
+  it("retains the saved result if its stale draft cannot be removed", () => {
+    const record = fakeRecord(initial.id);
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(record);
+    const remove = window.localStorage.removeItem;
+    window.localStorage.removeItem = (key) => {
+      if (key === "vsf:testProgress:v1") throw new DOMException("Blocked", "SecurityError");
+      remove(key);
+    };
+
+    expect(deleteHistoryRecord(initial.id)).toBeNull();
+    expect(getHistory()).toEqual([record]);
+    expect(loadTestProgress()).toBeNull();
+
+    window.localStorage.removeItem = remove;
+    expect(deleteHistoryRecord(initial.id)).toEqual([]);
+    expect(loadTestProgress()).toBeNull();
+  });
+
+  it("preserves a different unfinished test when clearing history", () => {
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(fakeRecord("different-test"));
+    expect(clearHistory()).toEqual([]);
+    expect(loadTestProgress()).toEqual(initial);
+  });
+
+  it("rejects a checkpoint update from a tab that still has an already saved test open", () => {
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(fakeRecord(initial.id));
+    const outdated: TestProgress = {
+      ...initial,
+      tests: [{ sensitivity: 0.28, testIndex: 1, measurement: { score: 75 } }],
+    };
+
+    expect(saveTestProgress(outdated, initial)).toBe("conflict");
+    expect(deleteHistoryRecord(initial.id)).toEqual([]);
+    expect(saveTestProgress(outdated, initial)).toBe("conflict");
+    expect(loadTestProgress()).toBeNull();
+  });
+
+  it("cleans up the stale draft when its result ages out of a full history", () => {
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(fakeRecord(initial.id));
+    for (let index = 0; index < 50; index++) addHistoryRecord(fakeRecord(`history-${index}`));
+
+    expect(getHistory()).toHaveLength(50);
+    expect(getHistory().some((record) => record.id === initial.id)).toBe(false);
+    expect(loadTestProgress()).toBeNull();
+  });
+
+  it("cleans up the stale draft when the browser quota requires dropping its result", () => {
+    expect(saveTestProgress(initial, null)).toBe("saved");
+    addHistoryRecord(fakeRecord(initial.id));
+    const write = window.localStorage.setItem;
+    window.localStorage.setItem = (key, value) => {
+      if (key === "vsf:history:v1" && JSON.parse(value).length > 1) {
+        throw new DOMException("Full", "QuotaExceededError");
+      }
+      write(key, value);
+    };
+
+    const next = fakeRecord("new-result");
+    expect(addHistoryRecord(next)).toEqual([next]);
+    expect(loadTestProgress()).toBeNull();
+  });
+
   it("skips corrupt or unsupported progress and can save a new test", () => {
     const key = "vsf:testProgress:v1";
     store.set(key, JSON.stringify({
@@ -419,7 +615,7 @@ describe("storage: unfinished test progress", () => {
       tests: [{ sensitivity: 0.28, testIndex: 2, measurement: { score: 120, avgCorrections: 0 } }],
     }));
     expect(loadTestProgress()).toBeNull();
-    store.set(key, JSON.stringify({ ...initial, version: 7 }));
+    store.set(key, JSON.stringify({ ...initial, version: 11 }));
     expect(loadTestProgress()).toBeNull();
     expect(saveTestProgress(initial, null)).toBe("saved");
   });

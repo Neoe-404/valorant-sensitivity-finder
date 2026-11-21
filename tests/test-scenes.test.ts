@@ -48,13 +48,48 @@ function frame(dt = 16, x = cursor.x, y = cursor.y) {
   active.onFrame(f, scene);
 }
 
-function click(x = cursor.x, y = cursor.y) {
+function click(x = cursor.x, y = cursor.y, time?: number) {
   if (!active.onPointerDown) throw new Error("Scene does not accept clicks");
   cursor = { x, y };
-  active.onPointerDown(x, y, scene);
+  active.onPointerDown(x, y, scene, time);
 }
 
 describe("tracking timing", () => {
+  it("counts time outside the target even when the pointer returns before the next frame", () => {
+    const plan = scenePlanFor("tracking-between-frames", 0);
+    TrackingTest({ mode: "quick", plan, onComplete: vi.fn() });
+    frame(0);
+    const trajectory = [scene.targets[0]];
+    for (let index = 1; index < 938; index++) {
+      frame(16);
+      trajectory.push(scene.targets[0]);
+    }
+
+    const measure = (excursions: boolean, eventCoverage = true) => {
+      const complete = vi.fn<(result: TrackingResult) => void>();
+      TrackingTest({ mode: "quick", plan, eventCoverage, onComplete: complete });
+      frame(0, trajectory[0].x, trajectory[0].y);
+      for (let index = 1; index <= trajectory.length; index++) {
+        const previous = trajectory[index - 1];
+        const next = trajectory[index] ?? previous;
+        if (excursions && index < trajectory.length) {
+          active.onPointerMove?.(previous.x + 100, previous.y, now + 4);
+          active.onPointerMove?.(previous.x, previous.y, now + 12);
+        }
+        frame(16, next.x, next.y);
+      }
+      return complete.mock.calls[0][0];
+    };
+
+    const steady = measure(false);
+    const returning = measure(true);
+    expect(steady.coverage).toBeCloseTo(1, 7);
+    expect(returning.coverage).toBeCloseTo(0.5, 2);
+    expect(returning.velocityDiffRatio).toBeCloseTo(steady.velocityDiffRatio, 7);
+    expect(returning.score).toBeLessThan(steady.score);
+    expect(measure(true, false).coverage).toBeCloseTo(1, 7);
+  });
+
   it.each([0, 1])("asks to retry when the cursor only varies by %s px", (jitter) => {
     const complete = vi.fn<(result: TrackingResult) => void>();
     TrackingTest({ mode: "quick", onComplete: complete });
@@ -139,7 +174,7 @@ describe("calibration", () => {
     const result = complete.mock.calls[0][0];
     expect(result.clicks).toBe(6);
     expect(result.durationMs).toBe(192);
-    expect(result.avgMoveSpeed * result.durationMs / 1000).toBeCloseTo(720, 5);
+    expect(result.avgMoveSpeed * result.avgClickDelay * result.clicks / 1000).toBeCloseTo(720, 5);
     frame();
     expect(complete).toHaveBeenCalledTimes(1);
   });
@@ -154,13 +189,111 @@ describe("calibration", () => {
     expect(complete).not.toHaveBeenCalled();
     expect(scene.targets).toHaveLength(1);
   });
+
+  it("asks to retry when calibration times out without a click", () => {
+    const complete = vi.fn<(result: CalibrationResult) => void>();
+    CalibrationTest({ mode: "quick", onComplete: complete });
+    frame(0);
+    for (let index = 0; index < 200; index++) frame(100, 960 + index, 540);
+
+    expect(complete).not.toHaveBeenCalled();
+    expect(pause).toHaveBeenCalledExactlyOnceWith("calibration-idle");
+    expect(scene.targets).toEqual([]);
+
+    for (let index = 0; index < 6; index++) {
+      frame(0);
+      frame(100, scene.targets[0].x, scene.targets[0].y);
+      click();
+    }
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0][0]).toMatchObject({ clicks: 6, durationMs: 600, hitRate: 1 });
+  });
+
+  it("uses completed attempts for speed after timing out on a later target", () => {
+    const complete = vi.fn<(result: CalibrationResult) => void>();
+    CalibrationTest({ mode: "quick", onComplete: complete });
+    frame(0);
+    frame(100, 1060, 540);
+    click();
+    for (let index = 0; index < 200; index++) frame(100, 1060 + index, 540);
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(complete.mock.calls[0][0]).toMatchObject({
+      clicks: 1, durationMs: 20000, avgMoveSpeed: 1000, avgClickDelay: 100,
+    });
+  });
 });
 
 describe("micro target completion", () => {
+  it("uses the same event timing at different display rates", () => {
+    const measure = (refreshMs: number) => {
+      const complete = vi.fn<(result: MicroResult) => void>();
+      MicroAdjustmentTest({ mode: "quick", holdSampling: "events", onComplete: complete });
+      for (let targetIndex = 0; targetIndex < 8; targetIndex++) {
+        frame();
+        const target = scene.targets[0];
+        const spawn = now;
+        const moves = [
+          { time: spawn + 25, x: target.x + 4 },
+          { time: spawn + 125, x: target.x },
+        ];
+        const limit = spawn + 330;
+        while (now < limit) {
+          const next = now + refreshMs;
+          while (moves.length && moves[0].time <= next) {
+            const move = moves.shift()!;
+            cursor = { x: move.x, y: target.y };
+            active.onPointerMove?.(cursor.x, cursor.y, move.time);
+          }
+          frame(refreshMs);
+          if (!scene.targets.length) break;
+        }
+      }
+      return complete.mock.calls[0][0];
+    };
+
+    const fast = measure(8);
+    const slow = measure(80);
+    for (const result of [fast, slow]) {
+      expect(result.records[0]).toMatchObject({ completionTime: 275, holdMs: 250 });
+      expect(result.avgHoldError).toBeCloseTo(1.6, 7);
+    }
+    expect(slow.score).toBeCloseTo(fast.score, 7);
+  });
+
+  it("restarts the hold when two movement events leave and reenter before the next frame", () => {
+    MicroAdjustmentTest({ mode: "quick", holdSampling: "events", onComplete: vi.fn() });
+    frame();
+    const target = scene.targets[0];
+    active.onPointerMove?.(target.x, target.y, now + 8);
+    frame(16, target.x, target.y);
+    frame(224, target.x, target.y);
+    active.onPointerMove?.(target.x + 12, target.y, now + 4);
+    active.onPointerMove?.(target.x, target.y, now + 6);
+    frame(50, target.x, target.y);
+    expect(scene.hitMarks).toBeUndefined();
+    frame(205, target.x, target.y);
+    expect(scene.hitMarks).toBeUndefined();
+    frame(1, target.x, target.y);
+    expect(scene.hitMarks).toHaveLength(1);
+  });
+
+  it("finishes the hold at the deadline before applying a later exit event", () => {
+    MicroAdjustmentTest({ mode: "quick", holdSampling: "events", onComplete: vi.fn() });
+    frame();
+    const target = scene.targets[0];
+    active.onPointerMove?.(target.x, target.y, now + 8);
+    frame(240, target.x, target.y);
+    active.onPointerMove?.(target.x + 12, target.y, now + 24);
+    frame(40, target.x + 12, target.y);
+    expect(scene.targets).toEqual([]);
+    expect(scene.hitMarks).toHaveLength(1);
+  });
+
   it("measures the same hold error at different sampling rates and excludes movement after the deadline", () => {
     const measure = (intervals: number[]) => {
       const complete = vi.fn<(result: MicroResult) => void>();
-      MicroAdjustmentTest({ mode: "quick", onComplete: complete });
+      MicroAdjustmentTest({ mode: "quick", holdSampling: "time-weighted", onComplete: complete });
       for (let i = 0; i < 8; i++) {
         frame();
         const target = scene.targets[0];
@@ -185,7 +318,7 @@ describe("micro target completion", () => {
   });
 
   it("recognizes a completed hold before an exit measured by the next frame", () => {
-    MicroAdjustmentTest({ mode: "quick", onComplete: vi.fn() });
+    MicroAdjustmentTest({ mode: "quick", holdSampling: "time-weighted", onComplete: vi.fn() });
     frame();
     const target = scene.targets[0];
     frame(16, target.x + 8, target.y);
@@ -196,7 +329,7 @@ describe("micro target completion", () => {
   });
 
   it("restarts the hold if the cursor leaves before the deadline", () => {
-    MicroAdjustmentTest({ mode: "quick", onComplete: vi.fn() });
+    MicroAdjustmentTest({ mode: "quick", holdSampling: "time-weighted", onComplete: vi.fn() });
     frame();
     const target = scene.targets[0];
     frame(16, target.x + 8, target.y);
@@ -227,9 +360,9 @@ describe("micro target completion", () => {
     expect(Math.hypot(next.x - cursor.x, next.y - cursor.y)).toBeCloseTo(distance, 7);
   });
 
-  it.each([true, false])("completes only once and clears the scene with timeWeighted=%s", (timeWeighted) => {
+  it.each(["events", "time-weighted", "frames"] as const)("completes only once and clears the scene with %s sampling", (holdSampling) => {
     const complete = vi.fn<(result: MicroResult) => void>();
-    MicroAdjustmentTest({ mode: "quick", timeWeighted, onComplete: complete });
+    MicroAdjustmentTest({ mode: "quick", holdSampling, onComplete: complete });
     for (let i = 0; i < 8; i++) {
       frame();
       expect(scene.targets).toHaveLength(1);
@@ -242,7 +375,7 @@ describe("micro target completion", () => {
     expect(complete).toHaveBeenCalledTimes(1);
     expect(complete.mock.calls[0][0].hits).toBe(8);
     const first = complete.mock.calls[0][0].records[0];
-    expect(first.holdMs).toBeCloseTo(timeWeighted ? 250 : 251, 7);
+    expect(first.holdMs).toBeCloseTo(holdSampling === "frames" ? 251 : 250, 7);
     frame();
     expect(complete).toHaveBeenCalledTimes(1);
     expect(scene.targets).toEqual([]);
@@ -319,5 +452,46 @@ describe("flick target completion", () => {
     expect(scene.hitMarks![0].hit).toBe(false);
     // 首个目标未命中 → 记录 1 miss，尚未完成（共 12 个）
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { movementSampling: "events", reactionTime: 15, timeToTarget: 25, overshoot: true, pathSampleCount: 3, extraDistance: 180 },
+    { movementSampling: "frames", reactionTime: 40, timeToTarget: 40, overshoot: false, pathSampleCount: 1, extraDistance: 0 },
+  ] as const)("uses the selected $movementSampling sampling when the cursor returns before the next frame", (fixture) => {
+    const { movementSampling, extraDistance, ...measurement } = fixture;
+    const complete = vi.fn<(result: FlickResult) => void>();
+    FlickTest({ mode: "quick", plan: scenePlanFor("ordered-motion", 0), movementSampling, onComplete: complete });
+    for (let index = 0; index < 12; index++) {
+      frame();
+      const target = scene.targets[0];
+      const spawn = now;
+      active.onPointerMove?.(target.x, target.y, spawn + 15);
+      active.onPointerMove?.(target.x + 90, target.y, spawn + 21);
+      active.onPointerMove?.(target.x, target.y, spawn + 24);
+      now = spawn + 40;
+      click(target.x, target.y, spawn + 25);
+    }
+    const first = complete.mock.calls[0][0].records[0];
+    expect(first).toMatchObject({ hit: true, ...measurement });
+    expect(first.totalMouseDistance).toBeCloseTo(first.idealDistance + extraDistance, 5);
+  });
+
+  it("does not classify ongoing back-and-forth movement as a stall", () => {
+    const complete = vi.fn<(result: FlickResult) => void>();
+    FlickTest({ mode: "quick", plan: scenePlanFor("moving-away-from-target", 0), onComplete: complete });
+    for (let index = 0; index < 12; index++) {
+      frame();
+      const target = scene.targets[0];
+      const x = (target.x + cursor.x) / 2;
+      const y = (target.y + cursor.y) / 2;
+      frame(16, x, y);
+      for (let motion = 0; motion < 12; motion++) {
+        active.onPointerMove?.(x + 6, y, now + 5);
+        active.onPointerMove?.(x, y, now + 10);
+        frame(16, x, y);
+      }
+      click(target.x, target.y);
+    }
+    expect(complete.mock.calls[0][0].records[0]).toMatchObject({ hit: true, undershoot: false });
   });
 });

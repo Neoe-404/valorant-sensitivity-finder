@@ -29,6 +29,7 @@ import { TestRun } from "../lib/test-run";
 const settings = { ...DEFAULT_SETTINGS, mode: "quick" as const };
 const calibration = { durationMs: 2000, clicks: 6, avgMoveSpeed: 600, avgClickDelay: 300, avgReachDistance: 100, hitRate: 1, timestamp: 1 };
 let store: Map<string, string>;
+let onStorage: ((event: Pick<StorageEvent, "key" | "storageArea">) => void) | undefined;
 function SessionHarness(run: TestRun | null = null, preferences = settings) {
   host.index = 0;
   return useSensitivitySession(preferences, run);
@@ -80,11 +81,20 @@ beforeEach(() => {
   host.slots = [];
   host.index = 0;
   store = new Map();
-  vi.stubGlobal("window", { localStorage: {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-  } });
+  onStorage = undefined;
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+      removeItem: (key: string) => { store.delete(key); },
+    },
+    addEventListener: (type: string, listener: typeof onStorage) => {
+      if (type === "storage") onStorage = listener;
+    },
+    removeEventListener: (type: string, listener: typeof onStorage) => {
+      if (type === "storage" && onStorage === listener) onStorage = undefined;
+    },
+  });
 });
 afterEach(() => {
   clearLastSession();
@@ -99,7 +109,49 @@ describe("session flow and result handoff", () => {
     expect(flow.finalSnapshot).not.toBeNull();
     expect(loadHistory()).toHaveLength(1);
     expect(getSessionForResults(flow.finalHistory!.id)).toEqual(flow.finalSnapshot);
+    expect(getSessionForResults(null)).toEqual(flow.finalSnapshot);
+    expect(store.has("vsf:lastSession:v1")).toBe(false);
     expect(loadTestProgress()).toBeNull();
+  });
+
+  it("retains both results when there is space for history but a duplicate would exceed quota", () => {
+    const historyKey = "vsf:history:v1";
+    const lastKey = "vsf:lastSession:v1";
+    const progressKey = "vsf:testProgress:v1";
+    const write = window.localStorage.setItem;
+    let draftLength = 0;
+    window.localStorage.setItem = (key, value) => {
+      if (key === progressKey) draftLength = Math.max(draftLength, value.length);
+      write(key, value);
+    };
+    const earlier = finishSession(true).finalSnapshot!;
+    store.set(lastKey, JSON.stringify(earlier));
+    const limit = store.get(historyKey)!.length * 2 + draftLength + 256;
+
+    host.slots = [];
+    window.localStorage.setItem = (key, value) => {
+      const size = [...store].reduce((total, [name, stored]) =>
+        name === key ? total : total + name.length + stored.length, key.length + value.length);
+      if (size > limit) throw new DOMException("Storage full", "QuotaExceededError");
+      write(key, value);
+    };
+    const latest = finishSession(true).finalSnapshot!;
+
+    expect(loadHistory().map((record) => record.id)).toEqual([latest.id, earlier.id]);
+    expect(store.has(lastKey)).toBe(false);
+    expect(getSessionForResults(earlier.id)).toEqual(earlier);
+    expect(getSessionForResults(latest.id)).toEqual(latest);
+  });
+
+  it.each([
+    ["skipped calibration", null],
+    ["older calibration with no clicks", { ...calibration, clicks: 0, avgClickDelay: 0 }],
+  ] as const)("saves a result with no calibration metrics for %s", (_label, measurement) => {
+    SessionHarness().finishCalibration(measurement);
+    expect(loadTestProgress()?.calibration.clicks).toBe(0);
+    const flow = completeRemaining(true);
+    expect(flow.finalSnapshot?.calibration).toBeNull();
+    expect(loadHistory()[0].snapshot).toEqual(flow.finalSnapshot);
   });
 
   it("restores an actual exported test after clearing browser history", () => {
@@ -127,7 +179,7 @@ describe("session flow and result handoff", () => {
       completedTests: 11, remainingInRound: 4,
     });
     const progress = loadTestProgress()!;
-    expect(progress.version).toBe(6);
+    expect(progress.version).toBe(10);
     expect(progress.tests).toHaveLength(11);
     expect(progress.tests[0].measurement).not.toHaveProperty("records");
 
@@ -287,6 +339,32 @@ describe("session flow and result handoff", () => {
     expect(loadTestProgress()).toEqual(newer.progress);
     expect(getSessionForResults(original.id)).toBeNull();
     expect(loadHistory()).toEqual([]);
+  });
+
+  it("detects another tab's new checkpoint before accepting another scene", () => {
+    SessionHarness().finishCalibration(calibration);
+    const stale = SessionHarness();
+    const newer = TestRun.restore(loadTestProgress()!)!;
+    const [flick] = samples(true);
+    newer.recordResult(flick);
+    store.set("vsf:testProgress:v1", JSON.stringify(newer.progress));
+
+    onStorage?.({ key: "vsf:settings:v1", storageArea: window.localStorage });
+    expect(host.slots).not.toContainEqual({ stage: "conflict" });
+    onStorage?.({ key: "vsf:testProgress:v1", storageArea: window.localStorage });
+    expect(host.slots).toContainEqual({ stage: "conflict" });
+
+    stale.recordTestResult({ ...flick, score: 75 });
+    expect(loadTestProgress()).toEqual(newer.progress);
+  });
+
+  it("blocks a start if the checkpoint changed before the storage event arrived", () => {
+    SessionHarness().finishCalibration(calibration);
+    const stale = SessionHarness();
+    expect(stale.checkCurrentProgress()).toBe(true);
+    store.delete("vsf:testProgress:v1");
+    expect(stale.checkCurrentProgress()).toBe(false);
+    expect(host.slots).toContainEqual({ stage: "conflict" });
   });
 
   it("ignores duplicate scene callbacks before React renders the next test", () => {

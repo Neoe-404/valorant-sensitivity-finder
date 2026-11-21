@@ -40,7 +40,7 @@ describe("analysis engine", () => {
       baseSensitivity: 0.35,
       best,
       rounds: 3,
-      calibration: { avgMoveSpeed: 900, avgClickDelay: 250 },
+      calibration: { avgMoveSpeed: 900, avgClickDelay: 250, clicks: 6, hitRate: 1 },
     });
     expect(profile.flick).toBe(80);
     expect(profile.tracking).toBe(70);
@@ -89,6 +89,13 @@ describe("analysis engine", () => {
     expect(analysisFor(best).some((item) => item.title === "一次性到位能力不错")).toBe(false);
   });
 
+  it("derives speed from the measured flick timing when calibration has no clicks", () => {
+    const input = { baseSensitivity: 0.35, best: makeCandidate(), rounds: 2, calibration: null };
+    const withoutCalibration = buildAimProfile(input);
+    const emptyCalibration = { avgMoveSpeed: 1200, avgClickDelay: 0, clicks: 0, hitRate: 0 };
+    expect(buildAimProfile({ ...input, calibration: emptyCalibration })).toEqual(withoutCalibration);
+  });
+
   it("updates a historic interpretation using its saved recommendation and actual measured scores", () => {
     const unfinished = makeCandidate({ sensitivity: 0.36, overallScore: 99, finished: false });
     const best = makeCandidate({ sensitivity: 0.37, overallScore: 89 });
@@ -112,5 +119,14 @@ describe("analysis engine", () => {
     expect(display.analysis[0].title).toBe("推荐值接近当前灵敏度");
     expect(display.analysis[0].text).toContain("0.341");
     expect(snapshot.analysis[0].text).toBe("旧建议");
+
+    const legacy = {
+      ...snapshot,
+      calibration: { avgMoveSpeed: 1200, avgClickDelay: 0, clicks: 0, hitRate: 0 },
+      profile: { ...snapshot.profile, speed: 100 },
+    };
+    const corrected = analyzeResult(legacy);
+    expect(corrected.calibration).toBeNull();
+    expect(corrected.profile).toEqual(snapshot.profile);
   });
 });

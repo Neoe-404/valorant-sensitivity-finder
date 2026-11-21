@@ -87,42 +87,115 @@ export function loadHistory(): HistoryRecord[] {
 }
 
 export function saveHistory(records: HistoryRecord[]): boolean {
-  return records.every(isHistoryRecord) && safeSet(KEYS.history, JSON.stringify(records)) === "ok";
+  if (typeof window === "undefined" || !records.every(isHistoryRecord)) return false;
+  try {
+    const existing = parseHistory(window.localStorage.getItem(KEYS.history));
+    return clearDraftForRemovedHistory(existing, records) && safeSet(KEYS.history, JSON.stringify(records)) === "ok";
+  } catch {
+    return false;
+  }
+}
+
+function clearDraftForRemovedHistory(existing: HistoryRecord[], next: HistoryRecord[]): boolean {
+  const keptIds = new Set(next.map((record) => record.id));
+  const removed = existing.filter((record) => !keptIds.has(record.id));
+  if (!removed.length) return true;
+
+  const progress = readTestProgress();
+  if (progress === undefined) return false;
+  // 历史中的结果已取代同 ID 的草稿。先清草稿，避免移除结果后重新提供续测。
+  return !progress || !removed.some((record) => record.id === progress.id) || clearTestProgress(progress);
 }
 
 /**
  * 写入历史记录。空间不足时丢弃最旧的记录后重试，
  * 直到写成功或仅剩新记录为止（保证本次结果尽量留存，牺牲旧历史）。
  */
-function writeHistory(records: HistoryRecord[]): boolean {
-  if (!records.every(isHistoryRecord)) return false;
-  let outcome = safeSet(KEYS.history, JSON.stringify(records));
+function writeHistory(records: HistoryRecord[], existing: HistoryRecord[]): HistoryRecord[] | null {
+  if (!records.every(isHistoryRecord)) return null;
+  // 旧版本会另存一次最近结果；已在历史中的副本不应占用配额。
+  removeDuplicateLastSession(existing);
   let trimmed = records;
-  while (outcome === "quota" && trimmed.length > 1) {
+  for (;;) {
+    if (!clearDraftForRemovedHistory(existing, trimmed)) return null;
+    const outcome = safeSet(KEYS.history, JSON.stringify(trimmed));
+    if (outcome === "ok") return trimmed;
+    if (outcome !== "quota" || trimmed.length <= 1) return null;
     trimmed = trimmed.slice(0, trimmed.length - 1);
-    outcome = safeSet(KEYS.history, JSON.stringify(trimmed));
   }
-  return outcome === "ok";
+}
+
+function removeDuplicateLastSession(history: HistoryRecord[]): void {
+  try {
+    const storage = window.localStorage;
+    const raw = storage.getItem(KEYS.lastSession);
+    const snapshot = parse(raw);
+    if (
+      isSessionSnapshot(snapshot) &&
+      history.some((record) => record.id === snapshot.id) &&
+      storage.getItem(KEYS.lastSession) === raw
+    ) {
+      storage.removeItem(KEYS.lastSession);
+    }
+  } catch {
+    // 清理副本失败仍尝试保存历史。
+  }
 }
 
 export function addHistoryRecord(record: HistoryRecord): HistoryRecord[] | null {
-  if (!isHistoryRecord(record)) return null;
-  // 写前重新读取已存历史并合并，尽量缓解多标签页并发写入时的后写覆盖。
-  const existing = loadHistory();
-  const next = [record, ...existing.filter((r) => r.id !== record.id)].slice(0, HISTORY_LIMIT);
-  return writeHistory(next) ? next : null;
+  if (!isHistoryRecord(record) || typeof window === "undefined") return null;
+  try {
+    // 读取失败时保留原有历史，以免把读不到的记录当成空列表。
+    const existing = parseHistory(window.localStorage.getItem(KEYS.history));
+    const next = [record, ...existing.filter((r) => r.id !== record.id)].slice(0, HISTORY_LIMIT);
+    return writeHistory(next, existing);
+  } catch {
+    return null;
+  }
 }
 
 export function deleteHistoryRecord(id: string): HistoryRecord[] | null {
-  const next = loadHistory().filter((r) => r.id !== id);
-  if (loadLastSession()?.id === id && !clearLastSession()) return null;
-  if (!saveHistory(next)) return null;
-  return next;
+  return removeHistoryRecords(id);
 }
 
 export function clearHistory(): HistoryRecord[] | null {
-  if (!clearLastSession() || !saveHistory([])) return null;
-  return [];
+  return removeHistoryRecords(null);
+}
+
+function removeHistoryRecords(id: string | null): HistoryRecord[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const storage = window.localStorage;
+    const previousHistory = storage.getItem(KEYS.history);
+    const history = parseHistory(previousHistory);
+    const previousLastSession = storage.getItem(KEYS.lastSession);
+    const saved = parse(previousLastSession);
+    const removeSaved = previousLastSession !== null &&
+      (id === null || (isSessionSnapshot(saved) && saved.id === id));
+    const next = id === null ? [] : history.filter((record) => record.id !== id);
+    if (!clearDraftForRemovedHistory(history, next)) return null;
+    const nextHistory = JSON.stringify(next);
+    storage.setItem(KEYS.history, nextHistory);
+
+    try {
+      // 另一个标签页可能已保存了新的最近结果。
+      if (removeSaved && storage.getItem(KEYS.lastSession) === previousLastSession) {
+        storage.removeItem(KEYS.lastSession);
+      }
+    } catch {
+      // 只回退这次写入，保留其他标签页之后写入的历史。
+      if (storage.getItem(KEYS.history) === nextHistory) {
+        if (previousHistory === null) storage.removeItem(KEYS.history);
+        else storage.setItem(KEYS.history, previousHistory);
+      }
+      return null;
+    }
+
+    if (id === null || pendingSession?.id === id) pendingSession = null;
+    return next;
+  } catch {
+    return null;
+  }
 }
 
 export function getHistoryRecord(id: string): HistoryRecord | null {
@@ -204,7 +277,11 @@ export function saveLastSession(snapshot: SessionSnapshot): boolean {
 
 export function loadLastSession(): SessionSnapshot | null {
   if (typeof window === "undefined") return null;
-  return pendingSession ?? readSavedLastSession();
+  let latest = readSavedLastSession();
+  for (const { snapshot } of loadHistory()) {
+    if (!latest || snapshot.createdAt > latest.createdAt) latest = snapshot;
+  }
+  return pendingSession && (!latest || pendingSession.createdAt >= latest.createdAt) ? pendingSession : latest;
 }
 
 function readSavedLastSession(): SessionSnapshot | null {
@@ -225,11 +302,13 @@ export function clearLastSession(): boolean {
 
 /** 指定 ID 时绝不替换成其他会话；未指定 ID 才显示最近结果。 */
 export function getSessionForResults(id: string | null): SessionSnapshot | null {
+  if (typeof window === "undefined") return null;
   if (!id) return loadLastSession();
   const history = getHistoryRecord(id);
   if (history) return history.snapshot;
-  const last = loadLastSession();
-  return last?.id === id ? last : null;
+  if (pendingSession?.id === id) return pendingSession;
+  const saved = readSavedLastSession();
+  return saved?.id === id ? saved : null;
 }
 
 /* ---------- 未完成测试 ---------- */
@@ -252,17 +331,38 @@ export function loadTestProgress(): TestProgress | null {
   return progress && !getHistoryRecord(progress.id) ? progress : null;
 }
 
+export function testProgressStatus(expected: TestProgress | null): "current" | "unavailable" | "conflict" {
+  const current = readTestProgress();
+  if (current === undefined) return "unavailable";
+  const conflict = expected
+    ? !sameTestProgress(current, expected) || Boolean(getHistoryRecord(expected.id))
+    : current && !getHistoryRecord(current.id);
+  return conflict ? "conflict" : "current";
+}
+
+export function watchTestProgress(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  try {
+    const storage = window.localStorage;
+    const onStorage = ({ key, storageArea }: StorageEvent) => {
+      // 首页和续测入口都会把已保存到历史的草稿视为完成。
+      if (storageArea === storage && (key === null || key === KEYS.testProgress || key === KEYS.history)) onChange();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  } catch {
+    return () => {};
+  }
+}
+
 export function saveTestProgress(
   progress: TestProgress,
   previous: TestProgress | null,
 ): "saved" | "unavailable" | "conflict" {
   const valid = parseTestProgress(progress);
   if (!valid) return "unavailable";
-  const current = readTestProgress();
-  if (current === undefined) return "unavailable";
-  if (previous ? !sameTestProgress(current, previous) : current && !getHistoryRecord(current.id)) {
-    return "conflict";
-  }
+  const status = testProgressStatus(previous);
+  if (status !== "current") return status;
   return safeSet(KEYS.testProgress, JSON.stringify(valid)) === "ok" ? "saved" : "unavailable";
 }
 

@@ -13,6 +13,7 @@ interface FlickTestProps {
   mode: TestMode;
   plan?: ScenePlan;
   scoringMethod?: FlickScoringMethod;
+  movementSampling?: "events" | "frames";
   onComplete: (result: FlickResult) => void;
 }
 
@@ -28,6 +29,9 @@ interface FlickState {
   // 每目标临时量
   prevX: number;
   prevY: number;
+  pathX: number;
+  pathY: number;
+  lastPathDistance: number;
   lastVx: number;
   lastVy: number;
   lastSpd: number;
@@ -40,7 +44,7 @@ interface FlickState {
  * Flick Test：20 个随机目标，记录每个目标的
  * 起点/命中点/路径/总距离/理想距离/反应/修正/过冲/欠冲。
  */
-export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestProps) {
+export function FlickTest({ mode, onComplete, plan, scoringMethod, movementSampling = "events" }: FlickTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
   const onCompleteRef = useRef(onComplete);
@@ -57,6 +61,9 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     idCounter: 1,
     prevX: 0,
     prevY: 0,
+    pathX: 0,
+    pathY: 0,
+    lastPathDistance: 0,
     lastVx: 0,
     lastVy: 0,
     lastSpd: 0,
@@ -109,6 +116,9 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     };
     s.prevX = cur.x;
     s.prevY = cur.y;
+    s.pathX = cur.x;
+    s.pathY = cur.y;
+    s.lastPathDistance = 0;
     s.lastVx = 0;
     s.lastVy = 0;
     s.lastSpd = 0;
@@ -118,17 +128,39 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     scene.targets = [target];
   };
 
-  const sampleMovement = (x: number, y: number, now: number, target: SceneTarget, rec: FlickTargetRecord) => {
-    const vx = x - s.prevX;
-    const vy = y - s.prevY;
-    const spd = Math.hypot(vx, vy);
-    rec.totalMouseDistance += spd;
+  const recordPath = (x: number, y: number, now: number, target: SceneTarget, rec: FlickTargetRecord) => {
+    rec.totalMouseDistance += dist(x, y, s.pathX, s.pathY);
     rec.pathSampleCount++;
 
     // 反应时间：累计位移超过 12px 视为“开始移动”
     if (!rec.firstMoveTime && rec.totalMouseDistance > 12) {
       rec.firstMoveTime = Math.max(now, rec.spawnTime);
     }
+
+    // 过冲可以发生在两次绘制之间，逐个检查已经采集的位置。
+    const dToT = dist(x, y, target.x, target.y);
+    if (dToT <= target.r) s.entered = true;
+    if (s.entered && dToT > target.r * 1.6) {
+      rec.overshoot = true;
+      rec.overshootDistance = Math.max(rec.overshootDistance, dToT - target.r);
+    }
+    s.pathX = x;
+    s.pathY = y;
+  };
+
+  const onPointerMove = (x: number, y: number, time: number) => {
+    if (s.target && s.rec && (x !== s.pathX || y !== s.pathY)) recordPath(x, y, time, s.target, s.rec);
+  };
+
+  const sampleFrame = (x: number, y: number, now: number, target: SceneTarget, rec: FlickTargetRecord) => {
+    if (movementSampling === "frames" || x !== s.pathX || y !== s.pathY) {
+      recordPath(x, y, now, target, rec);
+    }
+    const vx = x - s.prevX;
+    const vy = y - s.prevY;
+    const spd = Math.hypot(vx, vy);
+    const movement = movementSampling === "events" ? rec.totalMouseDistance - s.lastPathDistance : spd;
+    s.lastPathDistance = rec.totalMouseDistance;
 
     // 修正计数：明显反向
     if (spd > 5 && s.lastSpd > 5 && vx * s.lastVx + vy * s.lastVy < -spd * s.lastSpd * 0.4) {
@@ -138,7 +170,7 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     const dToT = dist(x, y, target.x, target.y);
 
     // 欠冲：明显停滞在目标半径之外 (>120ms)，之后需要再次移动
-    if (spd < 0.05 && dToT > target.r * 1.4) {
+    if (movement < 0.05 && dToT > target.r * 1.4) {
       if (!s.stallStart) s.stallStart = now;
       if (now - s.stallStart > 120 && rec.totalMouseDistance > rec.idealDistance * 0.35 && !rec.undershoot) {
         rec.undershoot = true;
@@ -146,13 +178,6 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
       }
     } else {
       s.stallStart = 0;
-    }
-
-    // 过冲：进入目标半径后再次大幅远离
-    if (dToT <= target.r) s.entered = true;
-    if (s.entered && dToT > target.r * 1.6) {
-      rec.overshoot = true;
-      rec.overshootDistance = Math.max(rec.overshootDistance, dToT - target.r);
     }
 
     s.prevX = x;
@@ -169,7 +194,7 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
       spawnTarget(f, scene);
       return;
     }
-    sampleMovement(f.x, f.y, f.now, s.target, s.rec);
+    sampleFrame(f.x, f.y, f.now, s.target, s.rec);
 
     scene.trail.push({ x: f.x, y: f.y, t: f.now });
     if (scene.trail.length > 100) scene.trail.splice(0, scene.trail.length - 100);
@@ -180,11 +205,12 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     };
   };
 
-  const onPointerDown = (x: number, y: number, scene: Scene) => {
+  const onPointerDown = (x: number, y: number, scene: Scene, time?: number) => {
     const rec = s.rec;
     if (s.finished || !rec || !s.target) return;
-    const now = performance.now();
-    if (x !== s.prevX || y !== s.prevY) sampleMovement(x, y, now, s.target, rec);
+    const feedbackAt = performance.now();
+    const now = movementSampling === "events" ? Math.max(time ?? feedbackAt, rec.firstMoveTime, rec.spawnTime) : feedbackAt;
+    if (x !== s.prevX || y !== s.prevY || x !== s.pathX || y !== s.pathY) sampleFrame(x, y, now, s.target, rec);
     rec.hit = dist(x, y, s.target.x, s.target.y) <= s.target.r;
     rec.hitTime = now;
     rec.hitX = x;
@@ -194,7 +220,7 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     rec.correctionCount = Math.min(8, rec.correctionCount);
     // 命中/未命中视觉反馈：在点击处画一个短暂淡出的标记
     if (!scene.hitMarks) scene.hitMarks = [];
-    scene.hitMarks.push({ x, y, t: now, hit: rec.hit });
+    scene.hitMarks.push({ x, y, t: feedbackAt, hit: rec.hit });
     s.records.push({ ...rec });
     s.target = null;
     s.rec = null;
@@ -220,7 +246,7 @@ export function FlickTest({ mode, onComplete, plan, scoringMethod }: FlickTestPr
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };
 
-  useActiveTest({ onFrame, onPointerDown, onReset });
+  useActiveTest({ onFrame, onPointerMove: movementSampling === "events" ? onPointerMove : undefined, onPointerDown, onReset });
 
   return null;
 }

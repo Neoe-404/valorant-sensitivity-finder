@@ -38,7 +38,7 @@ export class TestRun {
   private flick: FlickMeasurement | null = null;
   private tracking: TrackingMeasurement | null = null;
 
-  constructor(id: string, settings: PlayerSettings, calibration: CalibrationSummary, version: TestProgress["version"] = 6) {
+  constructor(id: string, settings: PlayerSettings, calibration: CalibrationSummary, version: TestProgress["version"] = 10) {
     this.search = new SensitivitySearch(
       settings.baseSensitivity, settings.dpi, settings.mode, version >= 6 ? "contiguous" : "all-high",
     );

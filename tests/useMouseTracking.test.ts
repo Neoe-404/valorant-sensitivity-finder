@@ -16,7 +16,7 @@ import { useMouseTracking } from "../hooks/useMouseTracking";
 function makeEvent(
   movementX: number,
   movementY: number,
-  coalesced?: { movementX: number; movementY: number }[] | null,
+  coalesced?: { movementX: number; movementY: number; timeStamp?: number }[] | null,
   throws = false
 ): MouseEvent {
   return {
@@ -64,6 +64,24 @@ describe("useMouseTracking", () => {
     const { handleMove, flush } = useMouseTracking();
     handleMove(makeEvent(9, 8, [{ movementX: 3, movementY: 2 }, { movementX: -3, movementY: -2 }]));
     expect(flush()).toEqual({ dx: 0, dy: 0 });
+  });
+
+  it("keeps ordered samples and timestamps for a path that ends where it started", () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+    try {
+      const { handleMove, flush } = useMouseTracking();
+      handleMove(makeEvent(9, 8, [
+        { movementX: 30, movementY: 5, timeStamp: 70 },
+        { movementX: -30, movementY: -5, timeStamp: 85 },
+      ]), true);
+      expect(flush()).toEqual({
+        dx: 0, dy: 0,
+        samples: [{ dx: 30, dy: 5, time: 70 }, { dx: -30, dy: -5, time: 85 }],
+      });
+      expect(flush()).toEqual({ dx: 0, dy: 0 });
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("falls back when getCoalescedEvents throws", () => {

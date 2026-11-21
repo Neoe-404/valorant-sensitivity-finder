@@ -2,6 +2,33 @@
 
 import { useCallback, useRef } from "react";
 
+interface MouseSample {
+  dx: number;
+  dy: number;
+  time: number;
+}
+
+interface MouseBatch {
+  dx: number;
+  dy: number;
+  samples?: MouseSample[];
+}
+
+export function inputEventTime(event: Event): number {
+  const now = performance.now();
+  return event.timeStamp > 0 && event.timeStamp <= now ? event.timeStamp : now;
+}
+
+function appendMovement(batch: MouseBatch, event: MouseEvent, capturePath: boolean) {
+  const dx = event.movementX || 0;
+  const dy = event.movementY || 0;
+  batch.dx += dx;
+  batch.dy += dy;
+  if (capturePath && (dx || dy)) {
+    (batch.samples ??= []).push({ dx, dy, time: inputEventTime(event) });
+  }
+}
+
 /**
  * 原始鼠标增量采集。
  * - movementX / movementY 写入 pending 缓冲区
@@ -10,43 +37,27 @@ import { useCallback, useRef } from "react";
  * - flush() 由 RAF 循环每帧调用一次，避免 React 重渲染
  */
 export function useMouseTracking() {
-  const pendingRef = useRef({ dx: 0, dy: 0 });
+  const pendingRef = useRef<MouseBatch>({ dx: 0, dy: 0 });
 
-  const handleMove = useCallback((e: MouseEvent) => {
-    let dx = e.movementX || 0;
-    let dy = e.movementY || 0;
-    const pe = e as PointerEvent;
-    if (typeof pe.getCoalescedEvents === "function") {
-      try {
-        const coalesced = pe.getCoalescedEvents();
-        if (coalesced && coalesced.length > 0) {
-          let sx = 0;
-          let sy = 0;
-          let hasMovement = false;
-          for (const c of coalesced) {
-            const x = c.movementX || 0;
-            const y = c.movementY || 0;
-            sx += x;
-            sy += y;
-            hasMovement ||= x !== 0 || y !== 0;
-          }
-          if (hasMovement) {
-            dx = sx;
-            dy = sy;
-          }
-        }
-      } catch {
-        // 某些浏览器不支持，退回 movementX/Y
-      }
+  const handleMove = useCallback((e: MouseEvent, capturePath = false) => {
+    let coalesced: PointerEvent[] | undefined;
+    try {
+      coalesced = (e as PointerEvent).getCoalescedEvents?.();
+    } catch {
+      // 某些浏览器只提供外层事件的 movementX/Y。
     }
-    pendingRef.current.dx += dx;
-    pendingRef.current.dy += dy;
+    const batch = pendingRef.current;
+    if (coalesced?.some((sample) => sample.movementX || sample.movementY)) {
+      for (const sample of coalesced) appendMovement(batch, sample, capturePath);
+    } else {
+      appendMovement(batch, e, capturePath);
+    }
   }, []);
 
   const flush = useCallback(() => {
-    const { dx, dy } = pendingRef.current;
+    const batch = pendingRef.current;
     pendingRef.current = { dx: 0, dy: 0 };
-    return { dx, dy };
+    return batch;
   }, []);
 
   return { pendingRef, handleMove, flush };

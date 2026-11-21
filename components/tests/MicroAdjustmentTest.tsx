@@ -13,7 +13,7 @@ import type { SceneTarget } from "@/components/aim/Target";
 interface MicroAdjustmentTestProps {
   mode: TestMode;
   plan?: ScenePlan;
-  timeWeighted?: boolean;
+  holdSampling?: "events" | "time-weighted" | "frames";
   onComplete: (result: MicroResult) => void;
 }
 
@@ -36,9 +36,11 @@ function randomMicroPosition(f: FrameData, cursor: { x: number; y: number }, rng
  * 小目标出现在准星附近；需要“进入半径并稳定 hold 一小段时间”才算命中，
  * 用于检测微调精度与稳定性（而非大范围 Flick）。
  */
-export function MicroAdjustmentTest({ mode, onComplete, plan, timeWeighted = true }: MicroAdjustmentTestProps) {
+export function MicroAdjustmentTest({ mode, onComplete, plan, holdSampling = "events" }: MicroAdjustmentTestProps) {
   const aim = useAim();
   const cfg = configFor(mode);
+  const timeWeighted = holdSampling !== "frames";
+  const sampleEvents = holdSampling === "events";
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
 
@@ -58,6 +60,7 @@ export function MicroAdjustmentTest({ mode, onComplete, plan, timeWeighted = tru
     holdCount: 0,
     holdErrSum: 0,
     holdMax: 0,
+    completedAt: null as number | null,
     previousTime: 0,
     previousError: 0,
     prevX: 0,
@@ -91,6 +94,7 @@ export function MicroAdjustmentTest({ mode, onComplete, plan, timeWeighted = tru
       completionTime: 0,
     };
     s.holding = false;
+    s.completedAt = null;
     s.previousTime = f.now;
     s.previousError = dist(cur.x, cur.y, position.x, position.y);
     s.prevX = cur.x;
@@ -140,47 +144,79 @@ export function MicroAdjustmentTest({ mode, onComplete, plan, timeWeighted = tru
     return time - s.holdStart >= s.holdMs ? time : null;
   };
 
-  const onFrame = (f: FrameData, scene: Scene) => {
-    if (s.finished) return;
-    s.elapsedMs += f.dt;
-    if (!s.target) {
-      spawnTarget(f);
-      if (s.target) scene.targets = [s.target];
-      return;
-    }
-    const rec = s.rec!;
-    const d = dist(f.x, f.y, s.target.x, s.target.y);
-    const hitTime = timeWeighted ? sampleHoldByTime(f.now, d) : sampleHoldByFrame(f.now, d);
-
-    // 方向修正计数（微调场景下的小反向）
-    const motionFraction = hitTime !== null && hitTime < f.now
-      ? (hitTime - s.previousTime) / (f.now - s.previousTime)
-      : 1;
-    const vx = (f.x - s.prevX) * motionFraction;
-    const vy = (f.y - s.prevY) * motionFraction;
+  const sampleCorrection = (x: number, y: number, rec: MicroTargetRecord, motionFraction = 1) => {
+    const vx = (x - s.prevX) * motionFraction;
+    const vy = (y - s.prevY) * motionFraction;
     const spd = Math.hypot(vx, vy);
     if (spd > 1.2 && s.lastSpd > 1.2 && vx * s.lastVx + vy * s.lastVy < -spd * s.lastSpd * 0.3) {
       rec.corrections++;
     }
-    s.prevX = f.x;
-    s.prevY = f.y;
+    s.prevX = x;
+    s.prevY = y;
     s.lastVx = vx;
     s.lastVy = vy;
     s.lastSpd = spd;
+  };
 
+  const sampleEvent = (x: number, y: number, time: number): number | null => {
+    if (!s.target || !s.rec || s.completedAt !== null) return s.completedAt;
+    // 准星在输入事件之间保持在最近一次测得的位置。先计入这段时间，再应用新位置。
+    const at = Math.max(s.previousTime, time);
+    if (s.holding) {
+      const deadline = s.holdStart + s.holdMs;
+      const end = Math.min(at, deadline);
+      s.holdErrSum += s.previousError * (end - s.previousTime);
+      if (end >= deadline) {
+        s.completedAt = deadline;
+        return deadline;
+      }
+    }
+
+    const moved = x !== s.prevX || y !== s.prevY;
+    if (moved) sampleCorrection(x, y, s.rec);
+    const error = moved ? dist(x, y, s.target.x, s.target.y) : s.previousError;
+    if (error <= s.target.r) {
+      if (!s.holding) startHold(at);
+      s.holdMax = Math.max(s.holdMax, error);
+    } else if (s.holding) {
+      s.holding = false;
+      s.rec.corrections++;
+    }
+    s.previousTime = at;
+    s.previousError = error;
+    return null;
+  };
+
+  const sampleFrame = (f: FrameData, target: SceneTarget, rec: MicroTargetRecord): number | null => {
+    const d = dist(f.x, f.y, target.x, target.y);
+    const hitTime = timeWeighted ? sampleHoldByTime(f.now, d) : sampleHoldByFrame(f.now, d);
+    const motionFraction = hitTime !== null && hitTime < f.now
+      ? (hitTime - s.previousTime) / (f.now - s.previousTime)
+      : 1;
+    sampleCorrection(f.x, f.y, rec, motionFraction);
     s.previousTime = f.now;
     s.previousError = d;
+    if (hitTime === null && d > MICRO_RADIUS && s.holding) {
+      s.holding = false;
+      rec.corrections++;
+    }
+    return hitTime;
+  };
+
+  const onFrame = (f: FrameData, scene: Scene) => {
+    if (s.finished) return;
+    s.elapsedMs += f.dt;
+    if (!s.target || !s.rec) {
+      spawnTarget(f);
+      if (s.target) scene.targets = [s.target];
+      return;
+    }
+    const hitTime = sampleEvents ? sampleEvent(f.x, f.y, f.now) : sampleFrame(f, s.target, s.rec);
     if (hitTime !== null) {
       hit(hitTime, f.now, scene);
       scene.targets = [];
       return;
     }
-    if (d > MICRO_RADIUS && s.holding) {
-      // 离开锁定半径 → 修正次数 +1，重新开始 hold
-      s.holding = false;
-      rec.corrections++;
-    }
-
     scene.targets = [s.target];
     scene.trail.push({ x: f.x, y: f.y, t: f.now });
     if (scene.trail.length > 40) scene.trail.splice(0, scene.trail.length - 40);
@@ -222,10 +258,11 @@ export function MicroAdjustmentTest({ mode, onComplete, plan, timeWeighted = tru
     s.target = null;
     s.rec = null;
     s.holding = false;
+    s.completedAt = null;
     if (aim.sceneRef.current) aim.sceneRef.current.targets = [];
   };
 
-  useActiveTest({ onFrame, onReset });
+  useActiveTest({ onFrame, onPointerMove: sampleEvents ? sampleEvent : undefined, onReset });
 
   return null;
 }
